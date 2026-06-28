@@ -1,0 +1,27 @@
+appId: app.terminaldeck.desktop
+productName: TerminalDeck
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+# node-pty ships native binaries (.node / conpty.dll / OpenConsole.exe) that
+# cannot be loaded from inside an asar archive — keep them unpacked.
+asarUnpack:
+  - '**/node_modules/node-pty/**'
+extraResources:
+  - from: resources/shell-integration
+    to: shell-integration
+win:
+  icon: build/icon.ico
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: TerminalDeck
+# node-pty ships prebuilt N-API binaries (ABI-stable), so don't recompile from
+# source — there's no C++ toolchain and the prebuilt binary already works.
+npmRebuild: false

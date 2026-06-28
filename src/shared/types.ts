@@ -1,0 +1,446 @@
+/**
+ * Types shared between the Electron main process and the renderer.
+ * IPC payload shapes, persisted data models, and app-wide constants live here.
+ */
+
+export const APP_NAME = 'TerminalDeck'
+
+/** Every IPC channel name in the app. Single source of truth. */
+export const IPC = {
+  WindowMinimize: 'window:minimize',
+  WindowMaximize: 'window:maximize',
+  WindowClose: 'window:close',
+  WindowMaximized: 'window:maximized',
+
+  PtyShells: 'pty:shells',
+  PtyCreate: 'pty:create',
+  PtyWrite: 'pty:write',
+  PtyResize: 'pty:resize',
+  PtyKill: 'pty:kill',
+  PtyData: 'pty:data',
+  PtyExit: 'pty:exit',
+
+  AgentCreate: 'agent:create',
+  AgentSend: 'agent:send',
+  AgentInterrupt: 'agent:interrupt',
+  AgentKill: 'agent:kill',
+  AgentRespondPermission: 'agent:permission',
+  AgentSetPermissionMode: 'agent:set-permission-mode',
+  AgentEvent: 'agent:event',
+
+  FsPickRoot: 'fs:pick-root',
+  FsReadDir: 'fs:read-dir',
+  FsCreateFile: 'fs:create-file',
+  FsCreateDir: 'fs:create-dir',
+  FsRename: 'fs:rename',
+  FsCopy: 'fs:copy',
+  FsMove: 'fs:move',
+  FsDelete: 'fs:delete',
+  FsReveal: 'fs:reveal',
+  FsSearch: 'fs:search',
+  FsWatch: 'fs:watch',
+  FsUnwatch: 'fs:unwatch',
+  FsChanged: 'fs:changed',
+  FsReadFile: 'fs:read-file',
+  FsWriteFile: 'fs:write-file',
+  FsWatchFile: 'fs:watch-file',
+  FsUnwatchFile: 'fs:unwatch-file',
+  FsFileChanged: 'fs:file-changed',
+  FsImportPaths: 'fs:import-paths',
+  FsWriteBlob: 'fs:write-blob',
+  FsDownloadUrl: 'fs:download-url',
+  FsPasteClipboard: 'fs:paste-clipboard',
+
+  ProjectsList: 'projects:list',
+  ProjectsSave: 'projects:save',
+  ProjectsDelete: 'projects:delete',
+
+  KanbanLoad: 'kanban:load',
+  KanbanSave: 'kanban:save',
+
+  SettingsLoad: 'settings:load',
+  SettingsSave: 'settings:save',
+  AppVersion: 'app:version',
+
+  SessionLoad: 'session:load',
+  SessionSave: 'session:save',
+
+  // RemoteDeck — phone control Agent
+  RemoteStatus: 'remote:status',
+  RemoteStart: 'remote:start',
+  RemoteStop: 'remote:stop',
+  RemoteStatusChanged: 'remote:status-changed',
+  RemoteGetConfig: 'remote:get-config',
+  RemoteSetConfig: 'remote:set-config',
+  RemotePairingNew: 'remote:pairing-new',
+  RemoteDevicesList: 'remote:devices-list',
+  RemoteDeviceRevoke: 'remote:device-revoke',
+  RemoteTailscale: 'remote:tailscale',
+  RemoteTailscaleUp: 'remote:tailscale-up',
+  RemoteTailscaleServe: 'remote:tailscale-serve',
+  RemotePorts: 'remote:ports',
+
+  // Notifications (phone push + desktop)
+  NotifyGetConfig: 'notify:get-config',
+  NotifySetConfig: 'notify:set-config',
+  NotifyTaskComplete: 'notify:task-complete',
+
+  // Session sync (renderer ⇄ Agent): the phone mirrors the desktop's open panes
+  SessionsReport: 'sessions:report',
+  RemoteOpenPane: 'remote:open-pane'
+} as const
+
+export type ShellKind = 'powershell' | 'pwsh' | 'cmd' | 'gitbash'
+
+export interface ShellInfo {
+  kind: ShellKind
+  label: string
+  path: string
+}
+
+export interface PtySpawnOptions {
+  /** Defaults to the system shell (Windows PowerShell). */
+  shell?: ShellKind
+  /** Defaults to the user's home directory. */
+  cwd?: string
+  cols: number
+  rows: number
+  env?: Record<string, string>
+}
+
+export interface PtySession {
+  sessionId: string
+  shell: ShellKind
+  cwd: string
+  /** True when OSC 133 shell integration is active (enables command blocks). */
+  integrated: boolean
+}
+
+/* ── File system (explorer sidebar) ───────────────────────────────── */
+
+export interface FsEntry {
+  name: string
+  path: string
+  isDir: boolean
+}
+
+/**
+ * Outcome of importing one or more external items (a drop or an OS-clipboard
+ * paste) into a folder. Partial success is normal — some items can land while
+ * others fail, so successes and failures are reported together.
+ */
+export interface ImportResult {
+  /** Absolute paths actually created in the destination folder. */
+  created: string[]
+  /** One human-readable message per item that could not be imported. */
+  errors: string[]
+}
+
+/* ── Projects ─────────────────────────────────────────────────────── */
+
+export interface AutoStartCommand {
+  id: string
+  command: string
+  /** 1-based pane number within the project's workspace tab. */
+  paneIndex: number
+  label: string
+  delayMs: number
+  enabled: boolean
+}
+
+export interface ProjectEnvVar {
+  key: string
+  /** Decrypted in transit; encrypted at rest (DPAPI via safeStorage). */
+  value: string
+}
+
+export interface Project {
+  id: string
+  name: string
+  /** Accent color shown in the switcher, top bar, and project list. */
+  color: string
+  rootDir: string
+  description: string
+  defaultShell: ShellKind
+  /** Template id from the workspace layout templates ('single', 'quad', …). */
+  defaultTemplate: string
+  env: ProjectEnvVar[]
+  autoStart: AutoStartCommand[]
+  createdAt: number
+  lastOpenedAt: number | null
+}
+
+/* ── Settings ─────────────────────────────────────────────────────── */
+
+export interface AppSettings {
+  general: {
+    defaultShell: ShellKind
+    defaultTemplate: string
+    startup: 'restore' | 'empty'
+    theme: string
+    /** Starting directory for new terminals and the folder picker ('' = home). */
+    defaultDirectory: string
+    sidebarSide: 'left' | 'right'
+  }
+  editor: {
+    fontSize: number
+    tabSize: number
+    wordWrap: boolean
+    minimap: boolean
+    formatOnSave: boolean
+  }
+  terminal: {
+    fontSize: number
+    scrollback: number
+    cursorStyle: 'block' | 'underline' | 'bar'
+    cursorBlink: boolean
+    bell: boolean
+    /** Ctrl+C copies the selection when there is one (otherwise sends SIGINT). */
+    copyCtrlC: boolean
+    /** Ctrl+V pastes from the clipboard. */
+    pasteCtrlV: boolean
+    /** Ctrl+Shift+C copies the selection (dedicated copy, never interrupts). */
+    copyCtrlShiftC: boolean
+    /** Ctrl+Shift+V pastes from the clipboard. */
+    pasteCtrlShiftV: boolean
+    /** Click-to-move-cursor trigger: off, Alt+click, or plain click (text-editor feel). */
+    clickMovesCursor: 'off' | 'alt' | 'plain'
+    /** Highlight + type / Backspace replaces or deletes the selected input text. */
+    replaceSelectionOnType: boolean
+  }
+}
+
+/**
+ * Sentinel scrollback value meaning "infinite". xterm keeps this many lines
+ * before trimming; the buffer only grows with real content, so this is
+ * effectively unlimited while staying a finite, JSON-serializable number
+ * (Infinity can't survive JSON persistence).
+ */
+export const INFINITE_SCROLLBACK = 100_000_000
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  general: {
+    defaultShell: 'powershell',
+    defaultTemplate: 'single',
+    startup: 'restore',
+    theme: 'deepwater',
+    defaultDirectory: '',
+    sidebarSide: 'left'
+  },
+  editor: { fontSize: 13, tabSize: 2, wordWrap: false, minimap: true, formatOnSave: false },
+  terminal: {
+    fontSize: 13,
+    scrollback: 10_000,
+    cursorStyle: 'bar',
+    cursorBlink: true,
+    bell: false,
+    copyCtrlC: true,
+    pasteCtrlV: true,
+    copyCtrlShiftC: true,
+    pasteCtrlShiftV: true,
+    clickMovesCursor: 'alt',
+    replaceSelectionOnType: true
+  }
+}
+
+/* ── Kanban board ─────────────────────────────────────────────────── */
+
+export type KanbanColumnId = 'backlog' | 'todo' | 'inprogress' | 'inreview' | 'done'
+export type KanbanPriority = 'low' | 'medium' | 'high' | 'critical'
+
+export interface KanbanTag {
+  name: string
+  color: string
+}
+
+export interface KanbanCard {
+  id: string
+  title: string
+  /** Markdown supported. */
+  description: string
+  priority: KanbanPriority
+  tags: KanbanTag[]
+  /** 1-based pane number in the pane's workspace tab, or null. */
+  targetPane: number | null
+  column: KanbanColumnId
+  createdAt: number
+  updatedAt: number
+}
+
+/* ── Agent Chat (Claude Code via stream-json) ─────────────────────── */
+
+export type AgentPermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
+
+export interface AgentSpawnOptions {
+  /** Defaults to the user's home directory. */
+  cwd?: string
+  permissionMode?: AgentPermissionMode
+}
+
+export interface AgentSessionInfo {
+  agentId: string
+  cwd: string
+}
+
+export type AgentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: unknown }
+
+export type AgentEvent =
+  | { kind: 'init'; sessionId: string; model: string; cwd: string; slashCommands: string[] }
+  | { kind: 'text-delta'; text: string }
+  | { kind: 'assistant-message'; blocks: AgentBlock[] }
+  | { kind: 'tool-result'; toolUseId: string; isError: boolean; preview: string }
+  | { kind: 'permission-request'; requestId: string; toolName: string; input: unknown }
+  | { kind: 'result'; isError: boolean; costUsd: number; durationMs: number; errorText?: string }
+  | { kind: 'stderr'; text: string }
+  | { kind: 'exit'; code: number }
+
+/* ── RemoteDeck — phone control over Tailscale ────────────────────── */
+
+/** Default port for the embedded Agent HTTP/WS server. */
+export const REMOTE_DEFAULT_PORT = 8787
+/** Pairing codes are single-use and expire after this long. */
+export const PAIR_CODE_TTL_MS = 5 * 60_000
+/** WebSocket subprotocol that also carries the device token (`bearer.<token>`). */
+export const REMOTE_WS_SUBPROTOCOL = 'terminaldeck.v1'
+
+export interface RemoteConfig {
+  /** Start the Agent automatically when the app launches. */
+  autoStart: boolean
+  port: number
+  /** Filesystem roots the phone may browse / open sessions in. */
+  allowedRoots: string[]
+}
+
+/** Live status of the embedded Agent, surfaced to the renderer wizard. */
+export interface RemoteServerStatus {
+  running: boolean
+  port: number
+  /** All reachable base URLs (loopback, LAN IPs, tailnet https when served). */
+  urls: string[]
+  /** Best URL to show in the QR (tailnet https preferred), or null when off. */
+  primaryUrl: string | null
+  deviceCount: number
+}
+
+/** A phone that has paired. The raw token is never stored — only its hash. */
+export interface PairedDevice {
+  id: string
+  name: string
+  userAgent: string
+  createdAt: number
+  lastSeen: number
+}
+
+/** Payload encoded into the pairing QR (and shown as text). */
+export interface PairQrPayload {
+  /** The PWA base URL the phone opens. */
+  url: string
+  /** One-time pairing code. */
+  code: string
+  /** ms epoch when the code expires. */
+  expiresAt: number
+}
+
+/** POST /api/pair request/response (HTTP, used by the PWA). */
+export interface PairRequest {
+  code: string
+  deviceName?: string
+}
+export interface PairResponse {
+  token: string
+  deviceId: string
+  serverName: string
+}
+
+/** Tailscale state, for the connect-phone wizard. */
+export interface TailscaleStatus {
+  installed: boolean
+  running: boolean
+  needsLogin: boolean
+  /** MagicDNS name without the trailing dot, e.g. `pc.tailNNNN.ts.net`. */
+  fqdn: string | null
+  ipv4: string | null
+  magicDnsEnabled: boolean
+  /** True when our `tailscale serve` for the Agent port is active. */
+  serving: boolean
+  error?: string
+}
+
+export interface ListeningPort {
+  port: number
+  pid: number
+  process: string
+  address: string
+  /** Heuristic: likely a WSL-forwarded listener. */
+  wsl: boolean
+}
+
+/** One attachable terminal session owned by the Agent. */
+export interface RemoteSessionInfo {
+  id: string
+  title: string
+  cwd: string
+  shell: string
+  busy: boolean
+  alive: boolean
+  createdAt: number
+}
+
+export interface RemoteCreateOptions {
+  cwd?: string
+  shell?: ShellKind
+  /** Command auto-run once the shell is ready (e.g. 'claude'). */
+  command?: string
+  cols?: number
+  rows?: number
+  title?: string
+}
+
+/** WS frames: phone → Agent. Terminal bytes are base64 in `b64`. */
+export type RemoteClientFrame =
+  | { t: 'list' }
+  | { t: 'attach'; id: string; cols: number; rows: number; since: number }
+  | { t: 'input'; id: string; b64: string }
+  | { t: 'resize'; id: string; cols: number; rows: number }
+  | { t: 'ping' }
+
+/** WS frames: Agent → phone. */
+export type RemoteServerFrame =
+  | { t: 'sessions'; sessions: RemoteSessionInfo[] }
+  | { t: 'attached'; id: string; seq: number }
+  | { t: 'data'; id: string; seq: number; b64: string }
+  | { t: 'exit'; id: string; code: number }
+  | { t: 'pong' }
+  | { t: 'error'; message: string }
+
+/* ── Notifications: task-complete alerts to phone and/or desktop ──── */
+
+/** Where a "task complete" alert goes. `phone` = Web Push to paired phones. */
+export type NotifyRoute = 'off' | 'phone' | 'desktop' | 'both'
+
+export interface NotifyConfig {
+  route: NotifyRoute
+  /** Only alert for commands/tasks that ran at least this many seconds. */
+  minDurationSec: number
+}
+
+export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = { route: 'phone', minDurationSec: 20 }
+
+/** Emitted by a pane when a real shell command finishes. */
+export interface TaskCompletePayload {
+  /** Pane/session label, e.g. "Terminal 2" or "Claude Code". */
+  title: string
+  exitCode: number
+  durationMs: number
+  /** Optional extra context (cwd, command…). */
+  detail?: string
+}
+
+/** A browser Push API subscription (from PushSubscription.toJSON()). */
+export interface WebPushSubscription {
+  endpoint: string
+  expirationTime?: number | null
+  keys: { p256dh: string; auth: string }
+}

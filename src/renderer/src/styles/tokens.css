@@ -1,0 +1,95 @@
+/*
+ * Quarterdeck design tokens — flagship dark theme "Deepwater" (provisional
+ * until the full theme system in Part 8; every value below becomes themeable).
+ *
+ * Identity: the bridge of a ship at night. Deep blue-black ink surfaces,
+ * brass instrument accents, restrained signal colors. Quiet confidence.
+ */
+
+:root {
+  /* Surfaces — three depth levels */
+  --bg-base: #0b0f16;
+  --bg-raised: #11161f;
+  --bg-overlay: #161d29;
+
+  /* Text hierarchy */
+  --ink: #e8ecf4;
+  --ink-2: #9aa4b8;
+  --ink-3: #5c677c;
+  --ink-inverse: #0b0f16;
+
+  /* Accent: polished brass */
+  --accent: #d8a956;
+  --accent-soft: #d8a95626;
+
+  /* Signals */
+  --danger: #ed5d5d;
+  --danger-soft: #ed5d5d1f;
+  --danger-edge: #4a2025;
+  --ok: #4cc38a;
+  --ok-soft: #4cc38a1f;
+  --warn: #e8b130;
+
+  /* Borders & dividers */
+  --edge: #232b3a;
+  --edge-2: #1a212e;
+
+  /* Terminal & command blocks */
+  --term-bg: #0d121b;
+  --term-ink: #c7cfdd;
+  --term-selection: #5b9dd94d;
+  --block-cmd-bg: #131a26;
+
+  /* ANSI palette — original, designed for Deepwater */
+  --ansi-0: #1a212e;
+  --ansi-1: #ed5d5d;
+  --ansi-2: #4cc38a;
+  --ansi-3: #e8b130;
+  --ansi-4: #5b9dd9;
+  --ansi-5: #b583d9;
+  --ansi-6: #4fb8c9;
+  --ansi-7: #c7cfdd;
+  --ansi-8: #4a5568;
+  --ansi-9: #f2807f;
+  --ansi-10: #6fd9a8;
+  --ansi-11: #f5c95c;
+  --ansi-12: #82b8e8;
+  --ansi-13: #cca3e8;
+  --ansi-14: #72d0de;
+  --ansi-15: #eff3f9;
+
+  /* Type */
+  --font-ui-stack: 'Schibsted Grotesk Variable', 'Segoe UI', system-ui, sans-serif;
+  --font-mono-stack: 'IBM Plex Mono', Consolas, monospace;
+}
+
+@theme inline {
+  --color-base: var(--bg-base);
+  --color-raised: var(--bg-raised);
+  --color-overlay: var(--bg-overlay);
+
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-inverse: var(--ink-inverse);
+
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-edge: var(--danger-edge);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+
+  --color-edge: var(--edge);
+  --color-edge-2: var(--edge-2);
+
+  --color-term: var(--term-bg);
+  --color-term-ink: var(--term-ink);
+  --color-block-cmd: var(--block-cmd-bg);
+
+  --font-ui: var(--font-ui-stack);
+  --font-mono: var(--font-mono-stack);
+}
