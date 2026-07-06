@@ -48,6 +48,7 @@ export function registerFsIpc(): void {
   ipcMain.handle(IPC.FsPasteClipboard, (_e, destDir: string) =>
     fsService.pasteClipboardInto(destDir)
   )
+  ipcMain.handle(IPC.FsCopyToClipboard, (_e, paths: string[]) => fsService.copyToClipboard(paths))
 
   ipcMain.on(IPC.FsWatchFile, (e, path: string) => fsService.watchFile(e.sender, path))
   ipcMain.on(IPC.FsUnwatchFile, (e, path: string) => fsService.unwatchFile(e.sender.id, path))

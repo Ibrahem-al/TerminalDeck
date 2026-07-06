@@ -12,7 +12,20 @@ interface Handlers {
   onSessions: (s: RemoteSessionInfo[]) => void
   onData: (id: string, bytes: Uint8Array) => void
   onExit: (id: string, code: number) => void
+  /** Scrollback gap on reconnect: clear the terminal before the replay arrives. */
+  onReset: (id: string) => void
 }
+
+/** Client ping cadence. */
+const HEARTBEAT_MS = 15_000
+/** No traffic for this long ⇒ the socket is a zombie; force a reopen. */
+const STALE_MS = 40_000
+/**
+ * On a resume event, reopen if the last traffic is older than this. Must exceed
+ * one HEARTBEAT_MS cycle so a socket that exchanged a pong this cycle is merely
+ * probed (ping), not needlessly torn down.
+ */
+const RESUME_STALE_MS = 20_000
 
 /**
  * Resilient WebSocket transport to the Agent: token auth via subprotocol,
@@ -23,7 +36,10 @@ export class Transport {
   private ws: WebSocket | null = null
   private backoff = 500
   private heartbeat: number | null = null
+  private reconnectTimer: number | null = null
   private closed = false
+  /** ms of the last inbound traffic (pong or data) — drives zombie detection. */
+  private lastActivityAt = 0
   private readonly lastSeq = new Map<string, number>()
   private readonly attached = new Map<string, { cols: number; rows: number }>()
 
@@ -38,6 +54,24 @@ export class Transport {
   }
 
   private open(): void {
+    if (this.closed) return
+    this.clearReconnectTimer()
+    // Stop the prior socket's heartbeat/watchdog so it can't fire mid-reconnect
+    // (re-armed in onopen).
+    this.stopHeartbeat()
+    // Tear down any prior socket so we never run two in parallel (the old
+    // reconnect-vs-reconnectNow race that produced duplicate data streams).
+    if (this.ws) {
+      const stale = this.ws
+      stale.onopen = stale.onclose = stale.onerror = stale.onmessage = null
+      try {
+        stale.close()
+      } catch {
+        /* ignore */
+      }
+      this.ws = null
+    }
+
     this.handlers.onState('connecting')
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
     const ws = new WebSocket(`${scheme}://${location.host}/ws`, [REMOTE_WS_SUBPROTOCOL, `bearer.${this.token}`])
@@ -46,6 +80,7 @@ export class Transport {
 
     ws.onopen = () => {
       this.backoff = 500
+      this.lastActivityAt = Date.now()
       this.handlers.onState('open')
       this.startHeartbeat()
       this.send({ t: 'list' })
@@ -55,6 +90,8 @@ export class Transport {
     }
     ws.onmessage = (ev) => this.onMessage(ev)
     ws.onclose = () => {
+      // Ignore a superseded socket's close (we already moved on).
+      if (this.ws !== ws) return
       this.stopHeartbeat()
       this.handlers.onState('closed')
       this.scheduleReconnect()
@@ -69,6 +106,8 @@ export class Transport {
   }
 
   private onMessage(ev: MessageEvent): void {
+    // Any inbound frame is proof of life.
+    this.lastActivityAt = Date.now()
     let frame: RemoteServerFrame
     try {
       const text = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(ev.data as ArrayBuffer)
@@ -79,6 +118,12 @@ export class Transport {
     switch (frame.t) {
       case 'sessions':
         this.handlers.onSessions(frame.sessions)
+        break
+      case 'reset':
+        // Scrollback scrolled past while we were away — clear, then the replay
+        // that follows rebuilds the screen from a clean slate.
+        this.lastSeq.delete(frame.id)
+        this.handlers.onReset(frame.id)
         break
       case 'attached':
         this.lastSeq.set(frame.id, frame.seq)
@@ -109,6 +154,10 @@ export class Transport {
 
   detach(id: string): void {
     this.attached.delete(id)
+    // Drop the replay cursor: a user-initiated leave means the next open builds a
+    // fresh empty terminal that must replay from the start, not from where we
+    // left off (which would render blank). Reconnect drops do NOT call detach.
+    this.lastSeq.delete(id)
   }
 
   input(id: string, data: string): void {
@@ -124,15 +173,36 @@ export class Transport {
     this.send({ t: 'resize', id, cols, rows })
   }
 
-  /** Force a reconnect if the socket isn't open (e.g. on tab becoming visible). */
+  /**
+   * Called on resume signals (tab visible / focus / online / pageshow). Mobile
+   * browsers freeze the page on background and the socket comes back a half-open
+   * zombie that still reads `OPEN` — so we can't trust readyState alone. Reopen
+   * if the socket is gone, not open, or has shown no traffic recently; otherwise
+   * probe with a ping and let the watchdog catch a dead one (avoids churning a
+   * genuinely-healthy socket on every brief app-switch).
+   */
   reconnectNow(): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) this.open()
+    if (this.closed) return
+    const open = this.ws && this.ws.readyState === WebSocket.OPEN
+    const stale = Date.now() - this.lastActivityAt > RESUME_STALE_MS
+    if (!open || stale) {
+      this.open()
+    } else {
+      this.send({ t: 'ping' })
+    }
   }
 
   close(): void {
     this.closed = true
     this.stopHeartbeat()
-    this.ws?.close()
+    this.clearReconnectTimer()
+    const ws = this.ws
+    this.ws = null
+    try {
+      ws?.close()
+    } catch {
+      /* ignore */
+    }
   }
 
   private send(frame: RemoteClientFrame): void {
@@ -141,7 +211,15 @@ export class Transport {
 
   private startHeartbeat(): void {
     this.stopHeartbeat()
-    this.heartbeat = window.setInterval(() => this.send({ t: 'ping' }), 20_000)
+    this.heartbeat = window.setInterval(() => {
+      // Watchdog: prolonged silence (even on a socket that still reads OPEN)
+      // means a zombie — force a clean reopen.
+      if (Date.now() - this.lastActivityAt > STALE_MS) {
+        this.open()
+        return
+      }
+      this.send({ t: 'ping' })
+    }, HEARTBEAT_MS)
   }
 
   private stopHeartbeat(): void {
@@ -151,11 +229,19 @@ export class Transport {
     }
   }
 
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+  }
+
   private scheduleReconnect(): void {
-    if (this.closed) return
+    if (this.closed || this.reconnectTimer !== null) return
     const delay = Math.min(this.backoff, 20_000) * (0.5 + Math.random())
     this.backoff = Math.min(this.backoff * 2, 20_000)
-    window.setTimeout(() => {
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null
       if (!this.closed) this.open()
     }, delay)
   }

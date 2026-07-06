@@ -23,7 +23,7 @@ import { useWorkspace } from '../../store/workspace'
 import { useEditorStore } from '../../store/editor'
 import { toast } from '../../store/toasts'
 import { fileIcon } from './fileIcons'
-import { isExternalFileDrag, QD_PATH_MIME } from './dnd'
+import { isExternalFileDrag, getTreeDragPath, setTreeDragPath } from './dnd'
 import { ContextMenu, type MenuAction } from '../terminal/ContextMenu'
 
 export type PendingOp =
@@ -38,13 +38,6 @@ function joinPath(dir: string, name: string): string {
 function parentOf(path: string): string {
   const i = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
   return i > 0 ? path.slice(0, i) : path
-}
-
-/** True when `target` is `src` itself or nested inside it (can't drop there). */
-function isWithin(target: string, src: string): boolean {
-  if (target === src) return true
-  const s = src.replace(/[\\/]+$/, '')
-  return target.startsWith(`${s}\\`) || target.startsWith(`${s}/`)
 }
 
 function NameInput({
@@ -109,15 +102,10 @@ export function FileTree({ pendingOp, setPendingOp }: FileTreeProps): React.JSX.
   const openInActiveTab = useWorkspace((s) => s.openInActiveTab)
 
   const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry } | null>(null)
-  // path being dragged within the tree, and the folder currently hovered as a drop target
-  const [dragging, setDragging] = useState<string | null>(null)
+  // folder currently hovered as a drop target
   const [dropTarget, setDropTarget] = useState<string | null>(null)
 
   if (!root) return <></>
-
-  /** Whether the in-progress drag may land in `dir` (not itself, its subtree, or its current home). */
-  const canDropInto = (dir: string): boolean =>
-    dragging !== null && !isWithin(dir, dragging) && parentOf(dragging) !== dir
 
   const commitPending = async (name: string): Promise<void> => {
     const op = pendingOp
@@ -299,33 +287,25 @@ export function FileTree({ pendingOp, setPendingOp }: FileTreeProps): React.JSX.
           <button
             draggable
             onDragStart={(e) => {
-              e.dataTransfer.setData(QD_PATH_MIME, entry.path)
-              e.dataTransfer.setData('text/plain', entry.path)
-              e.dataTransfer.effectAllowed = 'copyMove'
-              setDragging(entry.path)
+              // Native OS drag so the item can be dropped into Explorer/the desktop
+              // (copies it). The source is stashed (setTreeDragPath) so a drop back
+              // in this window resolves directly — a within-tree drop moves, a
+              // terminal drop inserts the path — without depending on the OS
+              // redelivering the file to our own window.
+              e.preventDefault()
+              setTreeDragPath(entry.path)
+              window.quarterdeck.shell.startDrag(entry.path)
             }}
             onDragEnd={() => {
-              setDragging(null)
+              setTreeDragPath(null)
               setDropTarget(null)
             }}
             onDragOver={(e) => {
-              if (dragging) {
-                if (entry.isDir) {
-                  e.stopPropagation()
-                  if (canDropInto(entry.path)) {
-                    e.preventDefault()
-                    e.dataTransfer.dropEffect = 'move'
-                    setDropTarget(entry.path)
-                  }
-                } else {
-                  // over a file: keep the root drop zone from claiming this spot
-                  e.stopPropagation()
-                }
-              } else if (isExternalFileDrag(e.dataTransfer)) {
-                // an outside drop onto a file lands in that file's folder
+              if (getTreeDragPath() || isExternalFileDrag(e.dataTransfer)) {
+                // a file drag onto a file lands in that file's folder
                 e.preventDefault()
                 e.stopPropagation()
-                e.dataTransfer.dropEffect = 'copy'
+                e.dataTransfer.dropEffect = getTreeDragPath() ? 'move' : 'copy'
                 setDropTarget(entry.isDir ? entry.path : parentOf(entry.path))
               }
             }}
@@ -334,19 +314,15 @@ export function FileTree({ pendingOp, setPendingOp }: FileTreeProps): React.JSX.
               if (dropTarget === target) setDropTarget(null)
             }}
             onDrop={(e) => {
-              if (dragging) {
-                if (!entry.isDir) return
+              const internal = getTreeDragPath()
+              if (internal || isExternalFileDrag(e.dataTransfer)) {
                 e.preventDefault()
                 e.stopPropagation()
-                const src = e.dataTransfer.getData(QD_PATH_MIME)
-                setDropTarget(null)
-                if (src && canDropInto(entry.path)) void move(src, entry.path)
-              } else if (isExternalFileDrag(e.dataTransfer)) {
-                e.preventDefault()
-                e.stopPropagation()
+                setTreeDragPath(null)
                 const dest = entry.isDir ? entry.path : parentOf(entry.path)
                 setDropTarget(null)
-                void importDrop(e.dataTransfer, dest)
+                if (internal) void move(internal, dest)
+                else void importDrop(e.dataTransfer, dest)
               }
             }}
             onClick={() => {
@@ -414,15 +390,9 @@ export function FileTree({ pendingOp, setPendingOp }: FileTreeProps): React.JSX.
         dropTarget === root ? 'rounded-sm ring-1 ring-inset ring-accent/60' : ''
       }`}
       onDragOver={(e) => {
-        if (dragging) {
-          if (parentOf(dragging) !== root) {
-            e.preventDefault()
-            e.dataTransfer.dropEffect = 'move'
-            setDropTarget(root)
-          }
-        } else if (isExternalFileDrag(e.dataTransfer)) {
+        if (getTreeDragPath() || isExternalFileDrag(e.dataTransfer)) {
           e.preventDefault()
-          e.dataTransfer.dropEffect = 'copy'
+          e.dataTransfer.dropEffect = getTreeDragPath() ? 'move' : 'copy'
           setDropTarget(root)
         }
       }}
@@ -430,18 +400,14 @@ export function FileTree({ pendingOp, setPendingOp }: FileTreeProps): React.JSX.
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null)
       }}
       onDrop={(e) => {
-        if (dragging) {
-          const src = e.dataTransfer.getData(QD_PATH_MIME)
-          setDropTarget(null)
-          if (src && parentOf(src) !== root) {
-            e.preventDefault()
-            void move(src, root)
-          }
-        } else if (isExternalFileDrag(e.dataTransfer)) {
+        const internal = getTreeDragPath()
+        if (internal || isExternalFileDrag(e.dataTransfer)) {
           e.preventDefault()
           e.stopPropagation()
+          setTreeDragPath(null)
           setDropTarget(null)
-          void importDrop(e.dataTransfer, root)
+          if (internal) void move(internal, root)
+          else void importDrop(e.dataTransfer, root)
         }
       }}
     >

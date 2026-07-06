@@ -5,6 +5,7 @@ import { useTerminalSession } from './useTerminalSession'
 import { SearchBar } from './SearchBar'
 import { ContextMenu, type MenuAction } from './ContextMenu'
 import { PANE_DRAG_TYPE } from '../workspace/paneDrag'
+import { getTreeDragPath, setTreeDragPath } from '../sidebar/dnd'
 
 interface Props {
   shell?: ShellKind
@@ -39,6 +40,16 @@ export function TerminalPane({ shell, cwd, env, paneId, autoRun, active = true }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [active, altScreen])
+
+  // Panes stay mounted across deck switches / moves / restore (PaneLayer just
+  // toggles visibility), so nothing re-runs start()'s initial term.focus(). Pull
+  // keyboard focus here whenever this becomes the active pane, so keystrokes land
+  // in the terminal instead of on <body> until the user clicks it.
+  useEffect(() => {
+    if (!active) return
+    const raf = requestAnimationFrame(() => focus())
+    return () => cancelAnimationFrame(raf)
+  }, [active, focus])
 
   const closeSearch = useCallback((): void => {
     setSearchOpen(false)
@@ -76,9 +87,11 @@ export function TerminalPane({ shell, cwd, env, paneId, autoRun, active = true }
     setDragOver(0)
     const quote = (p: string): string => (/\s/.test(p) ? `"${p}"` : p)
 
-    // internal drag from the file-tree sidebar
-    const internal = e.dataTransfer.getData('application/x-quarterdeck-path')
-    if (internal !== '') {
+    // drag from the file tree / search results (same window): use the stashed
+    // path, since a native-drag'd file isn't reliably redelivered to our window
+    const internal = getTreeDragPath()
+    if (internal) {
+      setTreeDragPath(null)
       paste(quote(internal))
       return
     }

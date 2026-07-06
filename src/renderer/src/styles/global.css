@@ -65,14 +65,18 @@ body {
   background: transparent !important;
 }
 
-/* Brief cross-fade when a theme is committed */
+/* Cross-fade for theme changes — both hover-preview and commit — so large
+ * swings (especially dark↔light) ease in instead of snapping. Armed via the
+ * data-theme-fade attribute (see store/theme.ts). */
 :root[data-theme-fade] *,
 :root[data-theme-fade] *::before,
 :root[data-theme-fade] *::after {
   transition:
-    background-color 180ms ease-out,
-    color 180ms ease-out,
-    border-color 180ms ease-out !important;
+    background-color 220ms ease,
+    color 220ms ease,
+    border-color 220ms ease,
+    fill 220ms ease,
+    stroke 220ms ease !important;
 }
 
 /* New content settles in */

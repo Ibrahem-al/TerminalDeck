@@ -24,7 +24,25 @@ function applyTokens(id: string): void {
   }
 }
 
+/** How long the cross-fade transition stays armed. Must exceed the CSS
+ *  transition duration in global.css so the last change fully settles. */
+const FADE_MS = 300
+
 let fadeTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Apply a theme with a brief cross-fade so large swings (especially dark↔light)
+ * ease in instead of snapping. Used by both hover-preview and commit; rapid
+ * hovers keep resetting the timer, so the transition stays smooth as the pointer
+ * sweeps across swatches and only disarms once things settle.
+ */
+function applyTokensWithFade(id: string): void {
+  const root = document.documentElement
+  root.setAttribute('data-theme-fade', '')
+  clearTimeout(fadeTimer)
+  fadeTimer = setTimeout(() => root.removeAttribute('data-theme-fade'), FADE_MS)
+  applyTokens(id)
+}
 
 export const useTheme = create<ThemeStore>((set, get) => ({
   activeId: 'deepwater',
@@ -37,19 +55,14 @@ export const useTheme = create<ThemeStore>((set, get) => ({
   },
 
   setActive: (id) => {
-    const root = document.documentElement
-    root.setAttribute('data-theme-fade', '')
-    clearTimeout(fadeTimer)
-    fadeTimer = setTimeout(() => root.removeAttribute('data-theme-fade'), 260)
-
-    applyTokens(id)
+    applyTokensWithFade(id)
     set((s) => ({ activeId: id, previewId: null, version: s.version + 1 }))
     useSettings.getState().update('general', { theme: id })
   },
 
   preview: (id) => {
     const target = id ?? get().activeId
-    applyTokens(target)
+    applyTokensWithFade(target)
     set((s) => ({ previewId: id, version: s.version + 1 }))
   }
 }))

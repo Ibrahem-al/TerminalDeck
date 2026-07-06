@@ -7,6 +7,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http'
 import type { Duplex } from 'stream'
 import { randomUUID } from 'crypto'
+import { powerSaveBlocker } from 'electron'
 import { WebSocketServer, type WebSocket } from 'ws'
 import {
   REMOTE_WS_SUBPROTOCOL,
@@ -30,14 +31,35 @@ import { listDevices, registerDevice, removePushSubsForDevice, setPushSubForDevi
 import { pushPublicKey } from './push'
 import { tailscaleStatus } from './tailscale'
 import { listListeningPorts } from '../preview/listPorts'
+import {
+  PREVIEW_COOKIE,
+  PREVIEW_PREFIX,
+  cookieValue,
+  isPreviewPortAllowed,
+  parsePreview,
+  proxyHttp,
+  proxyUpgrade
+} from '../preview/previewProxy'
 
 interface SocketMeta {
   deviceId: string
-  alive: boolean
+  /** Consecutive heartbeat ticks with no pong/traffic; reset by any sign of life. */
+  missed: number
 }
 
 const PAIR_FAIL_LIMIT = 10
 const PAIR_FAIL_WINDOW_MS = 5 * 60_000
+
+/** How often we ping a socket to probe liveness. */
+const HEARTBEAT_MS = 25_000
+/**
+ * How many consecutive missed pings tolerated before terminating a socket.
+ * ~125 s of total silence — generous on purpose: a phone that locks / backgrounds
+ * / hands off Wi-Fi↔cellular stops answering pings for a while but is NOT gone.
+ * The underlying PTY persists regardless, so a falsely-reaped socket loses nothing
+ * (the phone reopens and replays); this just releases genuinely-dead sockets.
+ */
+const MAX_MISSED_PONGS = 5
 
 export class RemoteServer {
   private http: Server | null = null
@@ -49,15 +71,44 @@ export class RemoteServer {
   private readonly meta = new WeakMap<WebSocket, SocketMeta>()
   private readonly pairFails = new Map<string, { count: number; resetAt: number }>()
 
+  /** Active powerSaveBlocker id while keep-awake is engaged, else null. */
+  private blockerId: number | null = null
+  private keepAwake: boolean
+
   constructor(
     private readonly backend: SessionBackend,
-    opts: { port: number; serverName: string }
+    opts: { port: number; serverName: string; keepAwake?: boolean }
   ) {
     this.port = opts.port
     this.serverName = opts.serverName
+    this.keepAwake = opts.keepAwake ?? true
   }
 
   private serverName: string
+
+  /** Toggle the keep-awake preference; (de)applies immediately if running. */
+  setKeepAwake(on: boolean): void {
+    this.keepAwake = on
+    this.updateKeepAwake()
+  }
+
+  /**
+   * Hold the system awake (no idle sleep) the whole time the Agent is running so
+   * a phone can reconnect after the user leaves. Uses 'prevent-app-suspension'
+   * (Windows ES_SYSTEM_REQUIRED) which keeps the system awake but lets the
+   * display sleep. Scoped to the server being up — NOT to live sockets — because
+   * a backgrounded/pocketed phone drops its socket, and we must stay reachable
+   * for its return.
+   */
+  private updateKeepAwake(): void {
+    const want = this.keepAwake && this.http !== null
+    if (want && this.blockerId === null) {
+      this.blockerId = powerSaveBlocker.start('prevent-app-suspension')
+    } else if (!want && this.blockerId !== null) {
+      if (powerSaveBlocker.isStarted(this.blockerId)) powerSaveBlocker.stop(this.blockerId)
+      this.blockerId = null
+    }
+  }
 
   setOnChange(fn: () => void): void {
     this.onChange = fn
@@ -85,7 +136,25 @@ export class RemoteServer {
     http.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head, wss))
 
     await new Promise<void>((resolve, reject) => {
-      const onErr = (e: Error): void => reject(e)
+      const onErr = (e: NodeJS.ErrnoException): void => {
+        // Clean up the half-built server so a retry (or a later start) works.
+        try {
+          http.close()
+        } catch {
+          /* ignore */
+        }
+        if (e.code === 'EADDRINUSE') {
+          reject(
+            new Error(
+              `Port ${this.port} is already in use — another copy of TerminalDeck or its RemoteDeck server is probably still running. Close it (or change the port), then try again.`
+            )
+          )
+        } else if (e.code === 'EACCES') {
+          reject(new Error(`Port ${this.port} can't be opened (permission denied). Try a port above 1024.`))
+        } else {
+          reject(e)
+        }
+      }
       http.once('error', onErr)
       http.listen(this.port, '0.0.0.0', () => {
         http.off('error', onErr)
@@ -95,6 +164,7 @@ export class RemoteServer {
 
     this.http = http
     this.wss = wss
+    this.updateKeepAwake()
     this.onChange?.()
   }
 
@@ -114,6 +184,7 @@ export class RemoteServer {
       else resolve()
     })
     this.http = null
+    this.updateKeepAwake()
     this.onChange?.()
   }
 
@@ -183,7 +254,42 @@ export class RemoteServer {
       return this.handleApi(path, req, res, deviceId)
     }
 
+    if (path.startsWith(PREVIEW_PREFIX)) return this.handlePreview(req, res)
+
     await serveStatic(req.url ?? '/', res)
+  }
+
+  /**
+   * Reverse-proxy a local dev/test server to the phone. Auth comes from a Bearer
+   * header (rare for navigations), the `rdp` cookie, or a one-time `?__t=` query
+   * — for which we set the cookie and redirect to a clean URL so the token never
+   * lingers in history. Connects loopback-only (see previewProxy.ts).
+   */
+  private async handlePreview(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const parsed = parsePreview(req.url ?? '')
+    if (!parsed) return void res.writeHead(404).end('bad preview path')
+
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const qToken = url.searchParams.get('__t')
+    const token = bearerFromHttp(req) ?? cookieValue(req.headers.cookie, PREVIEW_COOKIE) ?? qToken
+    if (!verifyToken(token)) return void res.writeHead(401).end('unauthorized')
+
+    if (qToken) {
+      // Stash the token in an HttpOnly cookie and bounce to the token-free URL.
+      url.searchParams.delete('__t')
+      const clean = url.pathname + (url.search === '?' ? '' : url.search)
+      res.writeHead(302, {
+        'Set-Cookie': `${PREVIEW_COOKIE}=${encodeURIComponent(qToken)}; Path=${PREVIEW_PREFIX}; HttpOnly; SameSite=Lax`,
+        Location: clean
+      })
+      return void res.end()
+    }
+
+    if (!(await isPreviewPortAllowed(parsed.port, this.port))) {
+      res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' })
+      return void res.end(`Port ${parsed.port} isn't a local server you can preview.`)
+    }
+    proxyHttp(parsed.port, parsed.rest, req, res)
   }
 
   private async handleApi(
@@ -286,7 +392,40 @@ export class RemoteServer {
   /* ── WebSocket ─────────────────────────────────────────────────── */
 
   private handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, wss: WebSocketServer): void {
-    if (new URL(req.url ?? '/', 'http://localhost').pathname !== '/ws') {
+    const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+
+    // HMR / live-reload sockets for a previewed dev server.
+    if (pathname.startsWith(PREVIEW_PREFIX)) {
+      const parsed = parsePreview(req.url ?? '')
+      const token =
+        cookieValue(req.headers.cookie, PREVIEW_COOKIE) ?? tokenFromWsProtocols(req.headers['sec-websocket-protocol'])
+      if (!parsed || !verifyToken(token)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+        socket.destroy()
+        return
+      }
+      // Same loopback/port gate as the HTTP path so a WS upgrade can't tunnel to
+      // an arbitrary local port (e.g. a database) or the Agent's own port.
+      void isPreviewPortAllowed(parsed.port, this.port)
+        .then((ok) => {
+          if (!ok) {
+            socket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n')
+            socket.destroy()
+            return
+          }
+          proxyUpgrade(parsed.port, parsed.rest, req, socket, head)
+        })
+        .catch(() => {
+          try {
+            socket.destroy()
+          } catch {
+            /* ignore */
+          }
+        })
+      return
+    }
+
+    if (pathname !== '/ws') {
       socket.destroy()
       return
     }
@@ -301,34 +440,38 @@ export class RemoteServer {
 
   private onConnection(ws: WebSocket, deviceId: string): void {
     this.sockets.add(ws)
-    this.meta.set(ws, { deviceId, alive: true })
+    this.meta.set(ws, { deviceId, missed: 0 })
     const unsubscribers = new Map<string, () => void>()
 
     const send = (frame: RemoteServerFrame): void => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(frame))
     }
 
+    // Liveness probe: count consecutive silent ticks, terminate only after a
+    // generous grace (MAX_MISSED_PONGS). Any pong OR inbound frame is a sign of
+    // life and resets the counter, so an actively-used socket is never reaped.
     const heartbeat = setInterval(() => {
       const m = this.meta.get(ws)
       if (!m) return
-      if (!m.alive) {
+      if (++m.missed >= MAX_MISSED_PONGS) {
         ws.terminate()
         return
       }
-      m.alive = false
       try {
         ws.ping()
       } catch {
         /* ignore */
       }
-    }, 25_000)
+    }, HEARTBEAT_MS)
 
-    ws.on('pong', () => {
+    const markAlive = (): void => {
       const m = this.meta.get(ws)
-      if (m) m.alive = true
-    })
+      if (m) m.missed = 0
+    }
+    ws.on('pong', markAlive)
 
     ws.on('message', (raw) => {
+      markAlive()
       let frame: RemoteClientFrame
       try {
         const parsed = JSON.parse(raw.toString())
@@ -380,6 +523,9 @@ export class RemoteServer {
       return
     }
     this.backend.resize(frame.id, frame.cols, frame.rows)
+    // On a scrollback gap, tell the phone to clear its terminal before the
+    // replay so the missing region doesn't garble the screen.
+    if (result.reset) send({ t: 'reset', id: frame.id })
     send({ t: 'attached', id: frame.id, seq: result.headSeq })
     if (result.replay.length) {
       send({ t: 'data', id: frame.id, seq: result.headSeq, b64: result.replay.toString('base64') })

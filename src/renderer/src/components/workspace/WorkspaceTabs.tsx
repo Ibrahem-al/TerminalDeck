@@ -49,8 +49,8 @@ export function WorkspaceTabs({ onNewTab }: Props): React.JSX.Element {
           >
             <button
               aria-label="Change tab color"
-              title="Change tab color"
-              onClick={(e) => {
+              title="Double-click to change tab color"
+              onDoubleClick={(e) => {
                 e.stopPropagation()
                 cycleTabColor(tab.id)
               }}

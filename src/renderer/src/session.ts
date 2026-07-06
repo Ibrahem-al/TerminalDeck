@@ -73,8 +73,14 @@ export async function restoreSession(data: unknown): Promise<boolean> {
       ? Object.fromEntries(project.env.filter((v) => v.key.trim() !== '').map((v) => [v.key, v.value]))
       : undefined
 
+  // Panes actually referenced by a tab (visible or hidden). Anything else in the
+  // snapshot is an orphan (version skew / partial write) — drop it so it can't
+  // linger un-rendered and get re-serialized forever.
+  const livePanes = new Set(data.tabs.flatMap((t) => [...paneIdsIn(t.layout), ...(t.hidden ?? [])]))
+
   const panes: Record<string, PaneMeta> = {}
   for (const [id, pane] of Object.entries(data.panes)) {
+    if (!livePanes.has(id)) continue
     const inheritsEnv =
       env !== undefined && project !== undefined && pane.cwd !== undefined && pane.cwd.startsWith(project.rootDir)
     panes[id] = { ...pane, env: inheritsEnv ? env : undefined }
@@ -95,8 +101,7 @@ export async function restoreSession(data: unknown): Promise<boolean> {
     void useExplorer.getState().openRoot(data.explorerRoot)
   }
 
-  // only keep editor slices whose panes survived
-  const livePanes = new Set(data.tabs.flatMap((t) => paneIdsIn(t.layout)))
+  // only keep editor slices whose panes survived (incl. hidden ones)
   const editorFiles: Record<string, string[]> = {}
   const editorActive: Record<string, string | null> = {}
   for (const [paneId, files] of Object.entries(data.editorFiles)) {

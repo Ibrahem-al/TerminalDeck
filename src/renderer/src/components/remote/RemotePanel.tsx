@@ -36,6 +36,7 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
   const [pairing, setPairing] = useState<PairQrPayload | null>(null)
   const [notify, setNotify] = useState<NotifyConfig | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     void rd().status().then(setStatus)
@@ -61,10 +62,11 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
 
   const run = useCallback(async (key: string, fn: () => Promise<void>): Promise<void> => {
     setBusy(key)
+    setError(null)
     try {
       await fn()
     } catch (e) {
-      console.error('[RemoteDeck]', e)
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(null)
     }
@@ -111,6 +113,12 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
       setConfig(await rd().setConfig({ ...config, autoStart }))
     })
 
+  const setKeepAwake = (keepAwake: boolean): Promise<void> =>
+    run('cfg', async () => {
+      if (!config) return
+      setConfig(await rd().setConfig({ ...config, keepAwake }))
+    })
+
   const qrValue = pairing ? `${pairing.url.replace(/\/+$/, '')}/?c=${pairing.code}` : ''
   const running = status?.running ?? false
 
@@ -145,6 +153,21 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
         </header>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          {error && (
+            <div className="flex items-start gap-2 rounded-lg border border-danger-edge bg-danger-soft px-3 py-2.5">
+              <span className="min-w-0 flex-1 font-ui text-[12px] leading-relaxed whitespace-pre-wrap break-words text-danger">
+                {linkify(error)}
+              </span>
+              <button
+                aria-label="Dismiss"
+                onClick={() => setError(null)}
+                className="shrink-0 rounded p-0.5 text-danger/70 hover:text-danger"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          )}
+
           {/* server toggle */}
           <div className={cardCls}>
             <div className="flex items-center justify-between gap-3">
@@ -174,6 +197,19 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
               />
               Start automatically when TerminalDeck launches
             </label>
+            <label className="mt-2 flex items-center gap-2 font-ui text-[12px] text-ink-2">
+              <input
+                type="checkbox"
+                className="accent-(--accent)"
+                checked={config?.keepAwake ?? true}
+                onChange={(e) => void setKeepAwake(e.target.checked)}
+              />
+              Keep this PC awake while running
+            </label>
+            <p className="mt-1 pl-6 font-ui text-[11px] text-ink-3">
+              Prevents the PC from sleeping so your phone can always reconnect after you leave. The display can still
+              sleep.
+            </p>
           </div>
 
           {/* step 1 — tailscale */}
@@ -332,6 +368,25 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
         </div>
       </div>
     </div>
+  )
+}
+
+/** Renders text with any http(s) URLs as clickable links (open in the system browser). */
+function linkify(text: string): React.ReactNode {
+  return text.split(/(https?:\/\/[^\s)]+)/g).map((part, i) =>
+    /^https?:\/\//.test(part) ? (
+      <a
+        key={i}
+        href={part}
+        target="_blank"
+        rel="noreferrer"
+        className="font-semibold underline underline-offset-2 hover:text-ink"
+      >
+        {part}
+      </a>
+    ) : (
+      <span key={i}>{part}</span>
+    )
   )
 }
 

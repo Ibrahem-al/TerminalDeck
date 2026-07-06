@@ -454,6 +454,20 @@ export function SettingsPanel({ onEditProject, onNewProject }: Props): React.JSX
                     onChange={(v) => update('terminal', { pasteCtrlShiftV: v })}
                   />
                 </Row>
+                <Row label="Copy on select" hint="Highlighting text copies it to the clipboard automatically — handy in apps like Claude Code that redraw and clear the highlight before you can press Ctrl+C">
+                  <Toggle
+                    checked={settings.terminal.copyOnSelect}
+                    label="Copy on select"
+                    onChange={(v) => update('terminal', { copyOnSelect: v })}
+                  />
+                </Row>
+                <Row label="Select text in full-screen apps" hint="Lets a plain mouse drag select text even in apps that grab the mouse (Claude Code, vim). While on, a plain click won't reach those apps — turn off if you need to click inside them (Shift+drag always selects).">
+                  <Toggle
+                    checked={settings.terminal.mouseSelectInApps}
+                    label="Select text in full-screen apps"
+                    onChange={(v) => update('terminal', { mouseSelectInApps: v })}
+                  />
+                </Row>
 
                 <p className="pt-5 pb-1 font-ui text-[11px] font-semibold tracking-wider text-ink-3 uppercase">
                   Editing

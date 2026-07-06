@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import type { ShellKind } from '@shared/types'
 import { readXtermTheme } from './xtermTheme'
 import { attachShellSignals } from './shellSignals'
@@ -221,6 +222,14 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
       const search = new SearchAddon()
       term.loadAddon(search)
       searchRef.current = search
+      // Detect URLs and open them in the OS default app on Ctrl+click (Cmd on
+      // mac). Plain click is left to cursor positioning / selection. main gates
+      // the scheme to http(s), so terminal output can't launch arbitrary apps.
+      term.loadAddon(
+        new WebLinksAddon((event, uri) => {
+          if (event.ctrlKey || event.metaKey) void window.quarterdeck.shell.openExternal(uri)
+        })
+      )
       term.open(el)
       try {
         const webgl = new WebglAddon()
@@ -317,6 +326,7 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
       const onTermMouseUp = (ev: MouseEvent): void => {
         const id = sessionIdRef.current
         if (!id || ev.button !== 0) return
+        if (ev.ctrlKey) return // Ctrl+click is reserved for opening links
         const mode = useSettings.getState().settings.terminal.clickMovesCursor
         if (mode === 'off') return
         // App grabbed the mouse (e.g. claude in fullscreen) — let it handle clicks.
@@ -361,6 +371,100 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
       el.addEventListener('mousedown', onTermMouseDown, true)
       el.addEventListener('mouseup', onTermMouseUp, true)
 
+      // ── Text selection inside full-screen apps (Claude Code, vim) ──────────
+      // Those apps turn on mouse reporting, so a normal drag is sent to the app
+      // and never becomes a selection — leaving nothing to copy. When enabled, we
+      // intercept a plain left drag over such an app and drive a local xterm
+      // selection ourselves via term.select(); finishing it can auto-copy. Plain
+      // clicks are swallowed here (they'd otherwise be reported to the app), which
+      // is the documented trade-off. Shift+drag is left to xterm's own force-
+      // selection, and non-mouse-mode terminals are untouched.
+      const cellAt = (clientX: number, clientY: number): { col: number; row: number } | null => {
+        const screen = el.querySelector('.xterm-screen') as HTMLElement | null
+        if (!screen) return null
+        const rect = screen.getBoundingClientRect()
+        const cellW = rect.width / term.cols
+        const cellH = rect.height / term.rows
+        if (cellW <= 0 || cellH <= 0) return null
+        const col = Math.min(term.cols - 1, Math.max(0, Math.floor((clientX - rect.left) / cellW)))
+        const relRow = Math.min(term.rows - 1, Math.max(0, Math.floor((clientY - rect.top) / cellH)))
+        return { col, row: term.buffer.active.viewportY + relRow }
+      }
+      const appSelectArmed = (ev: MouseEvent): boolean =>
+        useSettings.getState().settings.terminal.mouseSelectInApps &&
+        ev.button === 0 &&
+        !ev.shiftKey &&
+        !ev.altKey &&
+        !ev.ctrlKey &&
+        !ev.metaKey &&
+        term.modes.mouseTrackingMode !== 'none'
+
+      let selAnchor: { col: number; row: number } | null = null
+      let selDragging = false
+      const applySel = (cur: { col: number; row: number }): void => {
+        if (!selAnchor) return
+        const cols = term.cols
+        const aLin = selAnchor.row * cols + selAnchor.col
+        const cLin = cur.row * cols + cur.col
+        const start = Math.min(aLin, cLin)
+        const end = Math.max(aLin, cLin)
+        term.select(start % cols, Math.floor(start / cols), end - start + 1)
+      }
+      const copyOnSelect = (): void => {
+        if (useSettings.getState().settings.terminal.copyOnSelect && term.hasSelection()) {
+          void navigator.clipboard.writeText(term.getSelection())
+        }
+      }
+      const onSelDown = (ev: MouseEvent): void => {
+        if (!appSelectArmed(ev)) return
+        const cell = cellAt(ev.clientX, ev.clientY)
+        if (!cell) return
+        ev.preventDefault()
+        ev.stopImmediatePropagation()
+        selAnchor = cell
+        selDragging = false
+        term.clearSelection()
+      }
+      const onSelMove = (ev: MouseEvent): void => {
+        if (!selAnchor || (ev.buttons & 1) === 0) return
+        const cell = cellAt(ev.clientX, ev.clientY)
+        if (!cell) return
+        ev.preventDefault()
+        ev.stopImmediatePropagation()
+        // Not a real drag until the pointer leaves the anchor cell — otherwise a
+        // jittery click would select one glyph and (with copy-on-select) clobber
+        // the clipboard.
+        if (cell.col === selAnchor.col && cell.row === selAnchor.row) return
+        selDragging = true
+        applySel(cell)
+      }
+      const onSelUp = (ev: MouseEvent): void => {
+        if (!selAnchor) return
+        ev.preventDefault()
+        ev.stopImmediatePropagation()
+        const wasDragging = selDragging
+        selAnchor = null
+        selDragging = false
+        if (wasDragging) copyOnSelect()
+        else term.clearSelection() // a plain click — nothing to select
+        // We swallowed the mouse events, so xterm didn't refocus its input; a drag
+        // also emits no `click` for the pane's focus handler — refocus so typing works.
+        term.focus()
+      }
+      // Auto-copy a native selection once the drag finishes (bubble phase, after
+      // xterm has set the selection): a normal terminal, or a Shift+drag inside a
+      // mouse-mode app (Shift forces xterm's own selection there). The app-armed
+      // path can't reach here — it stopImmediatePropagation's in the capture phase.
+      const onNativeSelectUp = (ev: MouseEvent): void => {
+        if (ev.button !== 0) return
+        if (term.modes.mouseTrackingMode !== 'none' && !ev.shiftKey) return
+        copyOnSelect()
+      }
+      el.addEventListener('mousedown', onSelDown, true)
+      el.addEventListener('mousemove', onSelMove, true)
+      el.addEventListener('mouseup', onSelUp, true)
+      el.addEventListener('mouseup', onNativeSelectUp)
+
       let raf = 0
       const observer = new ResizeObserver(() => {
         cancelAnimationFrame(raf)
@@ -387,6 +491,10 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
         },
         () => el.removeEventListener('mousedown', onTermMouseDown, true),
         () => el.removeEventListener('mouseup', onTermMouseUp, true),
+        () => el.removeEventListener('mousedown', onSelDown, true),
+        () => el.removeEventListener('mousemove', onSelMove, true),
+        () => el.removeEventListener('mouseup', onSelUp, true),
+        () => el.removeEventListener('mouseup', onNativeSelectUp),
         () => offSearch.dispose(),
         () => offBell.dispose(),
         () => offBuffer.dispose(),

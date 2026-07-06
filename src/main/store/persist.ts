@@ -38,8 +38,8 @@ interface Schema {
   devices: StoredDevice[]
   /** Filesystem roots the phone may browse / open sessions in. */
   allowedRoots: string[]
-  /** RemoteDeck Agent config. */
-  remote: { autoStart: boolean; port: number }
+  /** RemoteDeck Agent config. (keepAwake added later; absent in old stores.) */
+  remote: { autoStart: boolean; port: number; keepAwake?: boolean }
   /** Task-complete notification routing. */
   notify: NotifyConfig
   /** VAPID keypair for Web Push (generated once). */
@@ -60,7 +60,7 @@ const store = new Store<Schema>({
     session: null,
     devices: [],
     allowedRoots: [homedir()],
-    remote: { autoStart: false, port: REMOTE_DEFAULT_PORT },
+    remote: { autoStart: false, port: REMOTE_DEFAULT_PORT, keepAwake: true },
     notify: DEFAULT_NOTIFY_CONFIG,
     vapid: null,
     pushSubs: []
@@ -187,8 +187,17 @@ export function registerDevice(name: string, userAgent: string, token: string): 
   return { id: device.id, name: device.name, userAgent, createdAt: now, lastSeen: now }
 }
 
+// Bump a device's lastSeen to disk at most once per this window. Without it,
+// high-frequency authed traffic (notably the preview proxy fanning one page into
+// many asset/HMR requests) would force a full synchronous store write per
+// request, stalling the main process. In-memory only — fine to reset on restart.
+const TOUCH_THROTTLE_MS = 60_000
+const lastTouchAt = new Map<string, number>()
+
 export function touchDevice(id: string): void {
   const now = Date.now()
+  if (now - (lastTouchAt.get(id) ?? 0) < TOUCH_THROTTLE_MS) return
+  lastTouchAt.set(id, now)
   store.set(
     'devices',
     store.get('devices').map((d) => (d.id === id ? { ...d, lastSeen: now } : d))
@@ -226,11 +235,17 @@ export function deviceForToken(token: string): string | null {
 
 export function loadRemoteConfig(): RemoteConfig {
   const r = store.get('remote')
-  return { autoStart: r.autoStart, port: r.port, allowedRoots: store.get('allowedRoots') }
+  return {
+    autoStart: r.autoStart,
+    port: r.port,
+    // Default on for stores written before keep-awake existed.
+    keepAwake: r.keepAwake ?? true,
+    allowedRoots: store.get('allowedRoots')
+  }
 }
 
 export function saveRemoteConfig(cfg: RemoteConfig): void {
-  store.set('remote', { autoStart: cfg.autoStart, port: cfg.port })
+  store.set('remote', { autoStart: cfg.autoStart, port: cfg.port, keepAwake: cfg.keepAwake })
   store.set('allowedRoots', cfg.allowedRoots)
 }
 

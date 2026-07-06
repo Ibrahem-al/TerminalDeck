@@ -15,6 +15,12 @@ export interface SubscribeResult {
   headSeq: number
   /** Buffered bytes after the requested `since`, replayed before live data. */
   replay: Buffer
+  /**
+   * True when `since` fell before the retained ring (output scrolled out while
+   * the phone was away). The replay is then the whole ring and the client must
+   * reset its terminal first to avoid a desync / garbled screen.
+   */
+  reset: boolean
   unsubscribe: () => void
 }
 

@@ -12,6 +12,11 @@ export const IPC = {
   WindowClose: 'window:close',
   WindowMaximized: 'window:maximized',
 
+  /** Open an http(s) URL in the OS default app (terminal Ctrl+click, etc.). */
+  ShellOpenExternal: 'shell:open-external',
+  /** Begin a native OS file drag so a tree item can be dragged out to Explorer. */
+  ShellStartDrag: 'shell:start-drag',
+
   PtyShells: 'pty:shells',
   PtyCreate: 'pty:create',
   PtyWrite: 'pty:write',
@@ -50,6 +55,8 @@ export const IPC = {
   FsWriteBlob: 'fs:write-blob',
   FsDownloadUrl: 'fs:download-url',
   FsPasteClipboard: 'fs:paste-clipboard',
+  /** Put file/folder paths on the OS clipboard so they can be pasted in Explorer. */
+  FsCopyToClipboard: 'fs:copy-to-clipboard',
 
   ProjectsList: 'projects:list',
   ProjectsSave: 'projects:save',
@@ -207,6 +214,15 @@ export interface AppSettings {
     clickMovesCursor: 'off' | 'alt' | 'plain'
     /** Highlight + type / Backspace replaces or deletes the selected input text. */
     replaceSelectionOnType: boolean
+    /** Finishing a selection copies it to the clipboard automatically. */
+    copyOnSelect: boolean
+    /**
+     * Let a plain mouse drag select text even in full-screen apps that grab the
+     * mouse (e.g. Claude Code, vim). When on, a left drag over such an app selects
+     * text locally instead of being sent to the app — so a plain click won't reach
+     * the app there. (Shift+drag always selects regardless.)
+     */
+    mouseSelectInApps: boolean
   }
 }
 
@@ -239,7 +255,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     copyCtrlShiftC: true,
     pasteCtrlShiftV: true,
     clickMovesCursor: 'alt',
-    replaceSelectionOnType: true
+    replaceSelectionOnType: true,
+    copyOnSelect: true,
+    mouseSelectInApps: true
   }
 }
 
@@ -311,6 +329,12 @@ export interface RemoteConfig {
   port: number
   /** Filesystem roots the phone may browse / open sessions in. */
   allowedRoots: string[]
+  /**
+   * Keep the PC awake (no idle system sleep) the whole time the Agent is
+   * running, so a phone can always reconnect after you leave. The display may
+   * still sleep. Defaults on — turn off to let the PC sleep normally.
+   */
+  keepAwake: boolean
 }
 
 /** Live status of the embedded Agent, surfaced to the renderer wizard. */
@@ -412,6 +436,9 @@ export type RemoteServerFrame =
   | { t: 'attached'; id: string; seq: number }
   | { t: 'data'; id: string; seq: number; b64: string }
   | { t: 'exit'; id: string; code: number }
+  /** Scrollback gap: the requested `since` fell out of the ring on reconnect.
+   *  The phone should reset its terminal before applying the replay that follows. */
+  | { t: 'reset'; id: string }
   | { t: 'pong' }
   | { t: 'error'; message: string }
 

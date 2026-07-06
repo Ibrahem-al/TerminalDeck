@@ -42,9 +42,11 @@ interface ExplorerStore {
   /** Moves `src` into `destDir` (drag-and-drop within the tree). */
   move: (src: string, destDir: string) => Promise<void>
   /**
-   * Imports items from an external drop (DataTransfer from outside the window)
-   * into `destDir`: local file paths and folders are copied, browser blobs are
-   * written from their bytes, and dragged http(s)/data URLs are downloaded.
+   * Handles a file drop onto `destDir`. Items already inside the open root are
+   * MOVED (an internal reorg); files/folders from outside, browser blobs, and
+   * dragged http(s)/data URLs are COPIED/downloaded in. This is the single entry
+   * point for every tree drop — internal drags, Explorer drops, and our own
+   * drag-out landing back all funnel here.
    */
   importDrop: (dataTransfer: DataTransfer, destDir: string) => Promise<void>
 }
@@ -53,6 +55,12 @@ interface ExplorerStore {
 function parentDir(path: string): string {
   const i = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'))
   return i > 0 ? path.slice(0, i) : path
+}
+
+/** True when `path` is `dir` itself or lives anywhere inside it. */
+function isUnder(path: string, dir: string): boolean {
+  const d = dir.replace(/[\\/]+$/, '')
+  return path === d || path.startsWith(`${d}\\`) || path.startsWith(`${d}/`)
 }
 
 export const useExplorer = create<ExplorerStore>((set, get) => ({
@@ -131,7 +139,11 @@ export const useExplorer = create<ExplorerStore>((set, get) => ({
     }
   },
 
-  copy: (path) => set({ clipboard: { path, cut: false } }),
+  copy: (path) => {
+    set({ clipboard: { path, cut: false } })
+    // Also put it on the OS clipboard so it can be pasted into Explorer.
+    void window.quarterdeck.fs.copyToClipboard([path])
+  },
   cut: (path) => set({ clipboard: { path, cut: true } }),
   clearClipboard: () => set({ clipboard: null }),
 
@@ -158,7 +170,9 @@ export const useExplorer = create<ExplorerStore>((set, get) => ({
 
   move: async (src, destDir) => {
     const from = parentDir(src)
-    if (from === destDir) return // dropped into its own folder — no-op
+    // No-op when dropped into its own folder, or refused when dropped into its
+    // own subtree (can't move a folder inside itself).
+    if (from === destDir || isUnder(destDir, src)) return
     const newPath = await fsResult(
       () => window.quarterdeck.fs.move(src, destDir),
       'Could not move'
@@ -189,20 +203,46 @@ export const useExplorer = create<ExplorerStore>((set, get) => ({
   importDrop: async (dataTransfer, destDir) => {
     // A DataTransfer is only readable during the drop event, so capture all of
     // it synchronously before the first await.
+    const root = get().root
     const fileList = Array.from(dataTransfer.files)
-    const localPaths: string[] = []
+    const movePaths: string[] = []
+    const copyPaths: string[] = []
     const blobs: File[] = []
     for (const file of fileList) {
       const path = window.quarterdeck.files.getPathForFile(file)
-      if (path) localPaths.push(path)
-      else blobs.push(file)
+      if (!path) {
+        blobs.push(file)
+        continue
+      }
+      // A file already inside the open root is an internal reorg → MOVE. Anything
+      // from outside (Explorer, a browser, or our own file dragged out and back)
+      // → COPY. Skip drops onto the item's own folder or into its own subtree.
+      if (root !== null && isUnder(path, root)) {
+        if (parentDir(path) !== destDir && !isUnder(destDir, path)) movePaths.push(path)
+      } else {
+        copyPaths.push(path)
+      }
     }
     const urls =
       fileList.length === 0
         ? parseDropUrls(dataTransfer.getData('text/uri-list'), dataTransfer.getData('text/plain'))
         : []
 
-    if (localPaths.length === 0 && blobs.length === 0 && urls.length === 0) return
+    if (movePaths.length === 0 && copyPaths.length === 0 && blobs.length === 0 && urls.length === 0) return
+
+    // Internal moves first (a within-root file dragged from Explorer's copy of
+    // the project, say). Count successes so reporting matches reality.
+    const fromDirs = new Set<string>()
+    let lastMoved: string | null = null
+    let moved = 0
+    for (const src of movePaths) {
+      const newPath = await fsResult(() => window.quarterdeck.fs.move(src, destDir), 'Could not move')
+      if (newPath !== null) {
+        fromDirs.add(parentDir(src))
+        lastMoved = newPath
+        moved++
+      }
+    }
 
     const merged: ImportResult = { created: [], errors: [] }
     const absorb = (r: ImportResult | null): void => {
@@ -211,9 +251,9 @@ export const useExplorer = create<ExplorerStore>((set, get) => ({
       merged.errors.push(...r.errors)
     }
 
-    if (localPaths.length > 0) {
+    if (copyPaths.length > 0) {
       absorb(
-        await fsResult(() => window.quarterdeck.fs.importPaths(destDir, localPaths), 'Import failed')
+        await fsResult(() => window.quarterdeck.fs.importPaths(destDir, copyPaths), 'Import failed')
       )
     }
     for (const blob of blobs) {
@@ -248,7 +288,31 @@ export const useExplorer = create<ExplorerStore>((set, get) => ({
         absorb(await fsResult(() => window.quarterdeck.fs.downloadUrl(destDir, url), 'Download failed'))
       }
     }
-    await applyImportResult(destDir, merged)
+
+    // Refresh source folders emptied by internal moves + the destination.
+    for (const dir of fromDirs) if (dir !== destDir) await get().loadDir(dir)
+    const added = merged.created.length
+    if (added > 0 || moved > 0) {
+      set((s) => ({
+        expanded: new Set(s.expanded).add(destDir),
+        selected: merged.created[added - 1] ?? lastMoved ?? s.selected
+      }))
+      await get().loadDir(destDir)
+    }
+
+    // Report moves and copies independently so a mixed drop shows both and a
+    // partial failure counts only what actually landed.
+    if (added > 0 && moved > 0) {
+      toast('success', `Moved ${moved}, added ${added}`, baseName(destDir))
+    } else if (moved > 0) {
+      toast('success', moved === 1 ? 'Moved 1 item' : `Moved ${moved} items`, baseName(destDir))
+    } else if (added > 0 && merged.errors.length === 0) {
+      toast('success', added === 1 ? 'Added 1 item' : `Added ${added} items`, baseName(destDir))
+    } else if (added > 0) {
+      toast('info', `Added ${added}, ${merged.errors.length} failed`, merged.errors[0])
+    } else if (merged.errors.length > 0) {
+      toast('error', 'Could not add files', merged.errors[0])
+    }
   }
 }))
 

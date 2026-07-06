@@ -84,12 +84,26 @@ export class PtyManager {
     const s = this.sessions.get(sessionId)
     if (!s) return null
     let replay: Buffer
-    if (since >= s.headSeq) replay = Buffer.alloc(0)
-    else replay = Buffer.from(s.ring.subarray(Math.max(0, since - s.bufStartSeq)))
+    let reset = false
+    if (since >= s.headSeq) {
+      // Caller is already up to date — nothing buffered to replay.
+      replay = Buffer.alloc(0)
+    } else if (since > 0 && since < s.bufStartSeq) {
+      // The bytes the caller last saw have scrolled out of the ring (long gap).
+      // Replay everything we still hold and signal a reset so the phone clears
+      // its terminal first — otherwise the missing region garbles the screen.
+      replay = Buffer.from(s.ring)
+      reset = true
+    } else {
+      // Fresh attach (since 0) or an in-range resume: replay from the requested
+      // point (clamped to the start of what we retain).
+      replay = Buffer.from(s.ring.subarray(Math.max(0, since - s.bufStartSeq)))
+    }
     s.subs.set(subscriberId, sub)
     return {
       headSeq: s.headSeq,
       replay,
+      reset,
       unsubscribe: () => {
         s.subs.delete(subscriberId)
       }

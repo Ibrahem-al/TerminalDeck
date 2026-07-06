@@ -88,10 +88,49 @@ export async function tailscaleUp(): Promise<void> {
   await run(cli, ['up'], 90_000)
 }
 
-/** Publishes (or tears down) https://<fqdn> → http://127.0.0.1:<port> on the tailnet. */
+/** Publishes (or tears down) https://<fqdn> → http://127.0.0.1:<port> on the tailnet.
+ *  Throws an Error whose message is whatever Tailscale reported — which, when the
+ *  tailnet's Serve or HTTPS-certificate features aren't enabled yet, includes the
+ *  exact admin URL to enable them. The wizard surfaces this to the user. */
 export async function tailscaleServe(port: number, enable: boolean): Promise<void> {
   const cli = findCli()
   if (!cli) throw new Error('Tailscale is not installed')
-  if (enable) await run(cli, ['serve', '--bg', String(port)], 30_000)
-  else await run(cli, ['serve', 'reset'], 15_000).catch(() => undefined)
+
+  if (!enable) {
+    await run(cli, ['serve', 'reset'], 15_000).catch(() => undefined)
+    return
+  }
+
+  // `serve` can fail (or stall, then fail) the first time if "Serve" or HTTPS
+  // certificates aren't enabled for the tailnet. Capture whatever it reports.
+  let reported = ''
+  try {
+    const r = await exec(cli, ['serve', '--bg', String(port)], {
+      windowsHide: true,
+      timeout: 25_000,
+      maxBuffer: 8 * 1024 * 1024
+    })
+    reported = `${r.stdout}\n${r.stderr}`.trim()
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; killed?: boolean; message?: string }
+    const captured = `${err.stderr ?? ''}\n${err.stdout ?? ''}`.trim()
+    if (captured) {
+      reported = captured // e.g. "Serve is not enabled on your tailnet. To enable, visit: …"
+    } else if (err.killed) {
+      throw new Error(
+        "Publishing timed out — Tailscale couldn't set up HTTPS. Enable HTTPS Certificates for your tailnet (admin console → DNS), then try again."
+      )
+    } else {
+      throw new Error(err.message ?? 'tailscale serve failed')
+    }
+  }
+
+  // Confirm it took effect; if the port isn't actually served, surface the report.
+  const status = await run(cli, ['serve', 'status']).catch(() => '')
+  if (!status.includes(String(port))) {
+    throw new Error(
+      reported ||
+        'Tailscale could not publish. Make sure Serve and HTTPS Certificates are enabled for your tailnet.'
+    )
+  }
 }

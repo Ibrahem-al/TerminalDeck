@@ -1,7 +1,7 @@
 import './ui/styles.css'
 import type { RemoteSessionInfo } from '@shared/types'
 import { Transport, type ConnState } from './net/Transport'
-import { createSession, deleteSession, listSessions, pair } from './net/api'
+import { createSession, deleteSession, listPorts, listSessions, pair } from './net/api'
 import { TerminalView } from './terminal/TerminalView'
 import { buildKeyBar } from './terminal/KeyBar'
 import { isIOS, isStandalone, registerSW } from './pwa/register-sw'
@@ -89,13 +89,30 @@ function startApp(tok: string): void {
     onExit: (id, codeNum) => {
       if (id === activeId) activeTerm?.write(new TextEncoder().encode(`\r\n\x1b[33m[session ended: code ${codeNum}]\x1b[0m\r\n`))
       void refreshSessions(tok)
+    },
+    onReset: (id) => {
+      if (id === activeId) activeTerm?.reset()
     }
   })
   transport.connect()
 
+  // Reconnect the instant the phone comes back from background / lock / network
+  // change. Several of these can fire together on one resume, so debounce.
+  let reviveTimer: number | null = null
+  const revive = (): void => {
+    if (reviveTimer !== null) return
+    reviveTimer = window.setTimeout(() => {
+      reviveTimer = null
+      transport?.reconnectNow()
+    }, 150)
+  }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') transport?.reconnectNow()
+    if (document.visibilityState === 'visible') revive()
   })
+  window.addEventListener('focus', revive)
+  window.addEventListener('online', revive)
+  window.addEventListener('pageshow', revive)
+  document.addEventListener('resume', revive)
   window.visualViewport?.addEventListener('resize', onViewport)
 
   void refreshSessions(tok)
@@ -155,6 +172,10 @@ function renderList(): void {
     bell.addEventListener('click', () => void togglePush())
     header.append(bell)
   }
+  const preview = button('\u{1F310}', 'icon')
+  preview.title = 'Preview a local server'
+  preview.addEventListener('click', () => void renderPorts())
+  header.append(preview)
   const add = button('+', 'icon')
   add.title = 'New session'
   add.addEventListener('click', renderNewSession)
@@ -220,6 +241,56 @@ function renderNewSession(): void {
   })
   card.append(field('Directory', dir), claude.parentElement as HTMLElement, create, err)
   app.append(card)
+}
+
+function renderPorts(): void {
+  const tok = localStorage.getItem(TOKEN_KEY)
+  if (!tok) return
+  app.innerHTML = ''
+  const header = el('header', 'bar')
+  const back = button('‹', 'icon')
+  back.addEventListener('click', renderList)
+  const refresh = button('⟳', 'icon')
+  refresh.title = 'Refresh'
+  header.append(back, el('span', 'title', 'Preview a server'), spacer(), refresh)
+  app.append(header)
+
+  const list = el('div', 'list')
+  app.append(list)
+
+  const load = async (): Promise<void> => {
+    list.innerHTML = ''
+    list.append(el('p', 'empty', 'Looking for local servers…'))
+    try {
+      const ports = await listPorts(tok)
+      list.innerHTML = ''
+      if (ports.length === 0) {
+        list.append(el('p', 'empty', 'No local servers found. Start your dev/test server, then refresh.'))
+        return
+      }
+      list.append(
+        el('p', 'empty', 'Tap a server to open it in your browser. Best with dev servers; some HMR may vary.')
+      )
+      for (const p of ports) {
+        const card = el('button', 'session')
+        const meta = el('span', 'smeta')
+        meta.append(
+          el('span', 'sname', `:${p.port}  ${p.process}`),
+          el('span', 'scwd', `${p.address}${p.wsl ? ' · wsl' : ''}`)
+        )
+        card.append(el('span', 'sdot idle'), meta)
+        card.addEventListener('click', () => {
+          window.open(`/__preview/${p.port}/?__t=${encodeURIComponent(tok)}`, '_blank')
+        })
+        list.append(card)
+      }
+    } catch (e) {
+      list.innerHTML = ''
+      list.append(el('p', 'error', humanError(e)))
+    }
+  }
+  refresh.addEventListener('click', () => void load())
+  void load()
 }
 
 function openTerminal(session: RemoteSessionInfo): void {

@@ -1,5 +1,5 @@
 /* RemoteDeck service worker — install + offline shell + push notifications. */
-const CACHE = 'remotedeck-v2'
+const CACHE = 'remotedeck-v3'
 const SHELL = ['/', '/offline.html', '/manifest.webmanifest', '/icons/icon-192.png']
 
 self.addEventListener('install', (event) => {
@@ -25,8 +25,9 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return
   const url = new URL(req.url)
 
-  // Never touch the live API or WebSocket upgrade.
-  if (url.pathname.startsWith('/api/') || url.pathname === '/ws') return
+  // Never touch the live API, WebSocket upgrade, or proxied preview servers
+  // (previews must always hit the network so assets stay fresh / HMR works).
+  if (url.pathname.startsWith('/api/') || url.pathname === '/ws' || url.pathname.startsWith('/__preview/')) return
 
   // App navigations: network-first, fall back to cached shell then offline page.
   if (req.mode === 'navigate') {

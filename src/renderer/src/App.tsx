@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { TopBar } from './components/chrome/TopBar'
 import { Toaster } from './components/toast/Toaster'
-import { TabView } from './components/workspace/TabView'
+import { PaneLayer } from './components/workspace/PaneLayer'
 import { TemplatePicker } from './components/workspace/TemplatePicker'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { QuickOpen } from './components/editor/QuickOpen'
@@ -22,8 +22,6 @@ import { sendToPane } from './components/terminal/inputBus'
 import type { Project } from '@shared/types'
 
 export default function App(): React.JSX.Element {
-  const tabs = useWorkspace((s) => s.tabs)
-  const activeTabId = useWorkspace((s) => s.activeTabId)
   const kanbanOpen = useKanban((s) => s.open)
   const settingsOpen = useSettings((s) => s.panelOpen)
   const sidebarSide = useSettings((s) => s.settings.general.sidebarSide)
@@ -180,17 +178,7 @@ export default function App(): React.JSX.Element {
       <div className="flex min-h-0 flex-1">
         {sidebarSide === 'left' && <Sidebar />}
         <main className="relative min-h-0 min-w-0 flex-1">
-          {booted &&
-            tabs.map((tab) => (
-              <div
-                key={tab.id}
-                className={`absolute inset-0 transition-opacity duration-150 ${
-                  tab.id === activeTabId ? 'opacity-100' : 'invisible opacity-0'
-                }`}
-              >
-                <TabView tab={tab} isTabActive={tab.id === activeTabId} />
-              </div>
-            ))}
+          {booted && <PaneLayer />}
           {kanbanOpen && <KanbanBoard />}
           {settingsOpen && (
             <SettingsPanel

@@ -1,11 +1,14 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import {
+  ArrowRightLeft,
   Bot,
   ChevronDown,
+  EyeOff,
   FileCode2,
   Folder,
   GripVertical,
   Pin,
+  Plus,
   SquareSplitHorizontal,
   SquareSplitVertical,
   Tag,
@@ -214,6 +217,60 @@ function NewPaneMenu({
   )
 }
 
+/** Menu to move this pane into another deck (tab), or a brand-new one. */
+function MoveMenu({
+  paneId,
+  currentTabId,
+  anchor,
+  onClose
+}: {
+  paneId: string
+  currentTabId: string
+  anchor: { x: number; y: number }
+  onClose: () => void
+}): React.JSX.Element {
+  const tabs = useWorkspace((s) => s.tabs)
+  const movePaneToTab = useWorkspace((s) => s.movePaneToTab)
+  const movePaneToNewTab = useWorkspace((s) => s.movePaneToNewTab)
+  const others = tabs.filter((t) => t.id !== currentTabId)
+
+  return (
+    <FloatingMenu anchor={anchor} onClose={onClose} minWidth={190}>
+      <p className="px-3 pt-2 pb-1 font-ui text-[10px] font-semibold tracking-[0.1em] text-ink-3 uppercase">
+        Move to deck
+      </p>
+      {others.length === 0 && (
+        <p className="px-3 pb-1.5 font-ui text-[11.5px] text-ink-3">No other decks yet.</p>
+      )}
+      {others.map((t) => (
+        <button
+          key={t.id}
+          role="menuitem"
+          onClick={() => {
+            movePaneToTab(paneId, t.id)
+            onClose()
+          }}
+          className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left font-ui text-[12.5px] text-ink-2 transition-colors duration-75 hover:bg-raised hover:text-ink"
+        >
+          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: t.color }} aria-hidden="true" />
+          <span className="truncate">{t.name}</span>
+        </button>
+      ))}
+      <div className="mx-2 my-1 border-t border-edge-2" />
+      <button
+        role="menuitem"
+        onClick={() => {
+          movePaneToNewTab(paneId)
+          onClose()
+        }}
+        className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left font-ui text-[12.5px] text-ink-2 transition-colors duration-75 hover:bg-raised hover:text-ink"
+      >
+        <Plus size={13} className="text-ink-3" aria-hidden="true" /> New deck
+      </button>
+    </FloatingMenu>
+  )
+}
+
 interface Props {
   pane: PaneMeta
   tabId: string
@@ -236,12 +293,14 @@ export const PaneFrame = memo(function PaneFrame({
   const setPaneBadge = useWorkspace((s) => s.setPaneBadge)
   const togglePin = useWorkspace((s) => s.togglePin)
   const swapPanes = useWorkspace((s) => s.swapPanes)
+  const hidePane = useWorkspace((s) => s.hidePane)
   const liveCwd = usePaneCwd((s) => s.byPane[pane.id])
 
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(pane.name)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [badgeMenu, setBadgeMenu] = useState<{ x: number; y: number } | null>(null)
+  const [moveMenu, setMoveMenu] = useState<{ x: number; y: number } | null>(null)
   const [dropActive, setDropActive] = useState(false)
   const dropCounter = useRef(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -423,6 +482,25 @@ export const PaneFrame = memo(function PaneFrame({
             <ChevronDown size={12} />
           </button>
           <button
+            aria-label="Move pane to another deck"
+            title="Move to another deck"
+            onClick={(e) => {
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+              setMoveMenu({ x: rect.left, y: rect.bottom + 4 })
+            }}
+            className="rounded p-1 text-ink-3 transition-colors duration-100 hover:text-ink"
+          >
+            <ArrowRightLeft size={12} />
+          </button>
+          <button
+            aria-label="Hide pane"
+            title="Hide pane — keeps it running; restore from the menu"
+            onClick={() => hidePane(pane.id)}
+            className="rounded p-1 text-ink-3 transition-colors duration-100 hover:text-ink"
+          >
+            <EyeOff size={12} />
+          </button>
+          <button
             aria-label="Close pane"
             title={pane.pinned ? 'Pinned — unpin to close' : isOnlyPane ? 'Closes this workspace tab' : 'Close pane'}
             onClick={() => closePane(pane.id)}
@@ -474,6 +552,9 @@ export const PaneFrame = memo(function PaneFrame({
           onPick={(badge) => setPaneBadge(pane.id, badge)}
           onClose={() => setBadgeMenu(null)}
         />
+      )}
+      {moveMenu && (
+        <MoveMenu paneId={pane.id} currentTabId={tabId} anchor={moveMenu} onClose={() => setMoveMenu(null)} />
       )}
     </div>
   )

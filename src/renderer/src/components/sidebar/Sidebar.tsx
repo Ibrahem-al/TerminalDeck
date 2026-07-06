@@ -15,7 +15,7 @@ import { useExplorer } from '../../store/explorer'
 import { useSettings } from '../../store/settings'
 import { useEditorStore } from '../../store/editor'
 import { fileIcon } from './fileIcons'
-import { isExternalFileDrag } from './dnd'
+import { isExternalFileDrag, getTreeDragPath, setTreeDragPath } from './dnd'
 import { FileTree, type PendingOp } from './FileTree'
 
 const MIN_W = 180
@@ -61,9 +61,12 @@ function SearchResults({ results }: { results: string[] }): React.JSX.Element {
             key={path}
             draggable
             onDragStart={(e) => {
-              e.dataTransfer.setData('application/x-quarterdeck-path', path)
-              e.dataTransfer.setData('text/plain', path)
+              // Native drag (drag out to Explorer) + stash for same-window drops.
+              e.preventDefault()
+              setTreeDragPath(path)
+              window.quarterdeck.shell.startDrag(path)
             }}
+            onDragEnd={() => setTreeDragPath(null)}
             onClick={() => select(path)}
             onDoubleClick={() => useEditorStore.getState().openFile(path)}
             title={path}
@@ -265,13 +268,19 @@ export function Sidebar(): React.JSX.Element | null {
             }}
             onDragOver={(e) => {
               // fallback drop zone (search results / empty space) — lands in root
-              if (root && isExternalFileDrag(e.dataTransfer)) {
+              if (root && (getTreeDragPath() || isExternalFileDrag(e.dataTransfer))) {
                 e.preventDefault()
-                e.dataTransfer.dropEffect = 'copy'
+                e.dataTransfer.dropEffect = getTreeDragPath() ? 'move' : 'copy'
               }
             }}
             onDrop={(e) => {
-              if (root && isExternalFileDrag(e.dataTransfer)) {
+              if (!root) return
+              const internal = getTreeDragPath()
+              if (internal) {
+                e.preventDefault()
+                setTreeDragPath(null)
+                void useExplorer.getState().move(internal, root)
+              } else if (isExternalFileDrag(e.dataTransfer)) {
                 e.preventDefault()
                 void useExplorer.getState().importDrop(e.dataTransfer, root)
               }

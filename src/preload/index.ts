@@ -38,6 +38,15 @@ const api = {
     }
   },
 
+  shell: {
+    /** Open an http(s) URL in the OS default app (validated in main). */
+    openExternal: (url: string): Promise<void> => ipcRenderer.invoke(IPC.ShellOpenExternal, url),
+    /** Begin a native OS drag of a file/folder (drag a tree item out to Explorer). */
+    startDrag: (filePath: string): void => {
+      ipcRenderer.send(IPC.ShellStartDrag, filePath)
+    }
+  },
+
   window: {
     minimize: (): void => ipcRenderer.send(IPC.WindowMinimize),
     maximize: (): void => ipcRenderer.send(IPC.WindowMaximize),
@@ -110,6 +119,9 @@ const api = {
     /** Paste copied files (or a copied image) from the OS clipboard into a folder. */
     pasteClipboard: (destDir: string): Promise<ImportResult> =>
       ipcRenderer.invoke(IPC.FsPasteClipboard, destDir),
+    /** Put file/folder paths on the OS clipboard (for pasting into Explorer). */
+    copyToClipboard: (paths: string[]): Promise<void> =>
+      ipcRenderer.invoke(IPC.FsCopyToClipboard, paths),
     watchFile: (path: string): void => ipcRenderer.send(IPC.FsWatchFile, path),
     unwatchFile: (path: string): void => ipcRenderer.send(IPC.FsUnwatchFile, path),
     onFileChanged: (callback: (path: string) => void): (() => void) => {

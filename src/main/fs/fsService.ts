@@ -191,6 +191,26 @@ export async function downloadInto(destDir: string, url: string): Promise<Import
   }
 }
 
+/**
+ * Puts file/folder paths onto the Windows clipboard as a file drop list, so the
+ * user can paste them (a copy) in Explorer. Paths are single-quoted with any
+ * embedded quote doubled, so building the command string can't inject anything.
+ */
+export function copyToClipboard(paths: string[]): Promise<void> {
+  const real = paths.filter((p) => typeof p === 'string' && p !== '')
+  if (process.platform !== 'win32' || real.length === 0) return Promise.resolve()
+  const list = real.map((p) => `'${p.replace(/'/g, "''")}'`).join(',')
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      // -Sta: Set-Clipboard needs a single-threaded apartment.
+      ['-NoProfile', '-NonInteractive', '-Sta', '-Command', `Set-Clipboard -LiteralPath @(${list})`],
+      { timeout: 5000, windowsHide: true },
+      () => resolve()
+    )
+  })
+}
+
 /** File paths sitting on the Windows clipboard (Explorer "Copy"), newest first. */
 function clipboardFilePaths(): Promise<string[]> {
   if (process.platform !== 'win32') return Promise.resolve([])

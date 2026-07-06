@@ -49,6 +49,11 @@ export interface WorkspaceTab {
   activePaneId: string
   /** Project this tab belongs to, when it was opened from a project. */
   projectId?: string
+  /**
+   * Panes that belong to this tab but are hidden from the layout. They stay
+   * mounted (and their sessions alive) — a menu restores them. Absent = none.
+   */
+  hidden?: string[]
 }
 
 /** Optional extras when creating a tab (e.g. binding it to a project). */
@@ -111,6 +116,14 @@ interface WorkspaceStore {
   togglePin: (paneId: string) => void
   /** Swaps two panes' positions within their tab (sessions stay alive). */
   swapPanes: (paneIdA: string, paneIdB: string) => void
+  /** Moves a pane into another tab, keeping its session alive. */
+  movePaneToTab: (paneId: string, destTabId: string) => void
+  /** Moves a pane into a brand-new tab, keeping its session alive. */
+  movePaneToNewTab: (paneId: string) => void
+  /** Hides a pane from its tab's layout (stays mounted/alive). */
+  hidePane: (paneId: string) => void
+  /** Restores a hidden pane back into its tab's layout. */
+  restorePane: (paneId: string) => void
   /** Replaces the whole workspace from a saved session snapshot. */
   hydrate: (state: {
     tabs: WorkspaceTab[]
@@ -159,6 +172,30 @@ function makeTab(
   }
 }
 
+/**
+ * Removes `paneId` from a tab's layout. Returns the updated tab, or null when
+ * the tab should be dropped entirely. If the layout empties but the tab still
+ * has hidden panes, one is promoted back into the layout so those panes aren't
+ * orphaned (a tab with hidden panes always keeps ≥1 visible pane).
+ */
+function tabWithoutLayoutPane(tab: WorkspaceTab, paneId: string): WorkspaceTab | null {
+  const newLayout = removePaneFromLayout(tab.layout, paneId)
+  if (newLayout !== null) {
+    const remaining = paneIdsIn(newLayout)
+    return {
+      ...tab,
+      layout: newLayout,
+      activePaneId: remaining.includes(tab.activePaneId) ? tab.activePaneId : remaining[0]
+    }
+  }
+  const hidden = tab.hidden ?? []
+  if (hidden.length > 0) {
+    const [promote, ...rest] = hidden
+    return { ...tab, layout: { type: 'pane', paneId: promote }, hidden: rest, activePaneId: promote }
+  }
+  return null
+}
+
 function initialState(): Pick<WorkspaceStore, 'tabs' | 'activeTabId' | 'panes' | 'spawnDefaults'> {
   const panes: Record<string, PaneMeta> = {}
   const tab = makeTab({ id: 'single', label: 'Single', rows: 1, cols: 1 }, panes, {})
@@ -181,13 +218,14 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     set((s) => {
       const tab = s.tabs.find((t) => t.id === tabId)
       if (!tab) return s
-      const pinned = paneIdsIn(tab.layout).filter((id) => s.panes[id]?.pinned)
+      const allIds = [...paneIdsIn(tab.layout), ...(tab.hidden ?? [])]
+      const pinned = allIds.filter((id) => s.panes[id]?.pinned)
       if (pinned.length > 0) {
         toast('info', 'Tab has pinned panes', 'unpin them before closing the tab')
         return s
       }
       const panes = { ...s.panes }
-      for (const id of paneIdsIn(tab.layout)) delete panes[id]
+      for (const id of allIds) delete panes[id]
       let tabs = s.tabs.filter((t) => t.id !== tabId)
       let activeTabId = s.activeTabId
       if (tabs.length === 0) {
@@ -230,7 +268,8 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
     const s = get()
     const tab = s.tabs.find((t) => paneIdsIn(t.layout).includes(paneId))
     if (!tab) return null
-    const count = paneIdsIn(tab.layout).length
+    // Count hidden panes too — they're live sessions, just parked off-layout.
+    const count = paneIdsIn(tab.layout).length + (tab.hidden?.length ?? 0)
     if (count >= MAX_PANES_PER_TAB) {
       toast('info', `Pane limit reached (${MAX_PANES_PER_TAB} per workspace)`)
       return null
@@ -260,14 +299,28 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
         toast('info', 'Pane is pinned', 'unpin it to close')
         return s
       }
+
+      // Closing a hidden pane: drop it from its tab's hidden list.
+      const hiddenTab = s.tabs.find((t) => t.hidden?.includes(paneId))
+      if (hiddenTab) {
+        const panes = { ...s.panes }
+        delete panes[paneId]
+        return {
+          panes,
+          tabs: s.tabs.map((t) =>
+            t.id === hiddenTab.id ? { ...t, hidden: (t.hidden ?? []).filter((id) => id !== paneId) } : t
+          )
+        }
+      }
+
       const tab = s.tabs.find((t) => paneIdsIn(t.layout).includes(paneId))
       if (!tab) return s
-      const newLayout = removePaneFromLayout(tab.layout, paneId)
       const panes = { ...s.panes }
       delete panes[paneId]
+      const updated = tabWithoutLayoutPane(tab, paneId)
 
-      if (newLayout === null) {
-        // last pane in the tab → the tab goes too (closeTab handles ≥1 invariant)
+      if (updated === null) {
+        // last pane in the tab (no hidden panes) → the tab goes too
         let tabs = s.tabs.filter((t) => t.id !== tab.id)
         let activeTabId = s.activeTabId
         if (tabs.length === 0) {
@@ -275,24 +328,12 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
           tabs = [fresh]
           activeTabId = fresh.id
         } else if (activeTabId === tab.id) {
-          tabs.length > 0 && (activeTabId = tabs[0].id)
+          activeTabId = tabs[0].id
         }
         return { tabs, panes, activeTabId }
       }
 
-      const remaining = paneIdsIn(newLayout)
-      return {
-        panes,
-        tabs: s.tabs.map((t) =>
-          t.id === tab.id
-            ? {
-                ...t,
-                layout: newLayout,
-                activePaneId: remaining.includes(t.activePaneId) ? t.activePaneId : remaining[0]
-              }
-            : t
-        )
-      }
+      return { panes, tabs: s.tabs.map((t) => (t.id === tab.id ? updated : t)) }
     }),
 
   setActivePane: (tabId, paneId) =>
@@ -338,6 +379,106 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
       return {
         tabs: s.tabs.map((t) =>
           t.id === tab.id ? { ...t, layout: swapPanesInLayout(t.layout, paneIdA, paneIdB) } : t
+        )
+      }
+    }),
+
+  movePaneToTab: (paneId, destTabId) =>
+    set((s) => {
+      const src = s.tabs.find((t) => paneIdsIn(t.layout).includes(paneId) || t.hidden?.includes(paneId))
+      const dest = s.tabs.find((t) => t.id === destTabId)
+      if (!src || !dest || src.id === dest.id) return s
+      if (paneIdsIn(dest.layout).length + (dest.hidden?.length ?? 0) >= MAX_PANES_PER_TAB) {
+        toast('info', `That deck is full (${MAX_PANES_PER_TAB} panes)`)
+        return s
+      }
+      const wasHidden = src.hidden?.includes(paneId) ?? false
+      const destUpdated: WorkspaceTab = {
+        ...dest,
+        layout: splitPaneInLayout(dest.layout, dest.activePaneId, 'row', paneId),
+        activePaneId: paneId
+      }
+      const srcUpdated = wasHidden
+        ? { ...src, hidden: (src.hidden ?? []).filter((id) => id !== paneId) }
+        : tabWithoutLayoutPane(src, paneId)
+
+      let tabs = s.tabs.map((t) => (t.id === dest.id ? destUpdated : t))
+      tabs =
+        srcUpdated === null
+          ? tabs.filter((t) => t.id !== src.id)
+          : tabs.map((t) => (t.id === src.id ? srcUpdated : t))
+      return { tabs, activeTabId: dest.id }
+    }),
+
+  movePaneToNewTab: (paneId) =>
+    set((s) => {
+      const src = s.tabs.find((t) => paneIdsIn(t.layout).includes(paneId) || t.hidden?.includes(paneId))
+      if (!src) return s
+      const wasHidden = src.hidden?.includes(paneId) ?? false
+      const tabId = `tab${++tabCounter}-${Date.now().toString(36)}`
+      const newTab: WorkspaceTab = {
+        id: tabId,
+        name: `Deck ${tabCounter}`,
+        color: TAB_COLORS[(tabCounter - 1) % TAB_COLORS.length],
+        layout: { type: 'pane', paneId },
+        activePaneId: paneId,
+        projectId: src.projectId
+      }
+      const srcUpdated = wasHidden
+        ? { ...src, hidden: (src.hidden ?? []).filter((id) => id !== paneId) }
+        : tabWithoutLayoutPane(src, paneId)
+
+      const kept =
+        srcUpdated === null
+          ? s.tabs.filter((t) => t.id !== src.id)
+          : s.tabs.map((t) => (t.id === src.id ? srcUpdated : t))
+      return { tabs: [...kept, newTab], activeTabId: tabId }
+    }),
+
+  hidePane: (paneId) =>
+    set((s) => {
+      const tab = s.tabs.find((t) => paneIdsIn(t.layout).includes(paneId))
+      if (!tab) return s
+      if (paneIdsIn(tab.layout).length <= 1) {
+        toast('info', "Can't hide the only pane", 'split, add, or move this pane first')
+        return s
+      }
+      const newLayout = removePaneFromLayout(tab.layout, paneId)
+      if (newLayout === null) return s // unreachable (length > 1), keeps types honest
+      const remaining = paneIdsIn(newLayout)
+      return {
+        tabs: s.tabs.map((t) =>
+          t.id === tab.id
+            ? {
+                ...t,
+                layout: newLayout,
+                hidden: [...(t.hidden ?? []), paneId],
+                activePaneId: remaining.includes(t.activePaneId) ? t.activePaneId : remaining[0]
+              }
+            : t
+        )
+      }
+    }),
+
+  restorePane: (paneId) =>
+    set((s) => {
+      const tab = s.tabs.find((t) => t.hidden?.includes(paneId))
+      if (!tab) return s
+      if (paneIdsIn(tab.layout).length >= MAX_PANES_PER_TAB) {
+        toast('info', `Pane limit reached (${MAX_PANES_PER_TAB} per workspace)`)
+        return s
+      }
+      return {
+        activeTabId: tab.id,
+        tabs: s.tabs.map((t) =>
+          t.id === tab.id
+            ? {
+                ...t,
+                hidden: (t.hidden ?? []).filter((id) => id !== paneId),
+                layout: splitPaneInLayout(t.layout, t.activePaneId, 'row', paneId),
+                activePaneId: paneId
+              }
+            : t
         )
       }
     }),

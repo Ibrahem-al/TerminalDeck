@@ -1,6 +1,7 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, nativeImage } from 'electron'
 import { join } from 'path'
 import { hostname } from 'os'
+import { existsSync } from 'fs'
 import { IPC } from '@shared/types'
 import { PtyManager } from './pty/PtyManager'
 import { registerPtyIpc } from './ipc/pty'
@@ -18,12 +19,28 @@ import { loadRemoteConfig } from './store/persist'
 
 const ptys = new PtyManager()
 
+// A small semi-transparent square used as the cursor image for native file
+// drag-out. Built from a raw bitmap so it's guaranteed non-empty (startDrag
+// rejects an empty icon) without shipping/resolving an image file at runtime.
+const DRAG_ICON = (() => {
+  const size = 16
+  const buf = Buffer.alloc(size * size * 4)
+  for (let i = 0; i < buf.length; i += 4) {
+    buf[i] = 0x9a // B
+    buf[i + 1] = 0x9a // G
+    buf[i + 2] = 0x9a // R
+    buf[i + 3] = 0xcc // A
+  }
+  return nativeImage.createFromBitmap(buf, { width: size, height: size })
+})()
+
 // RemoteDeck Agent: phone control over Tailscale. Mirrors the desktop's own
 // open terminal panes (DesktopBackend over PtyManager). Defaults off.
 const remoteBackend = new DesktopBackend(ptys)
 const remoteServer = new RemoteServer(remoteBackend, {
   port: loadRemoteConfig().port,
-  serverName: hostname()
+  serverName: hostname(),
+  keepAwake: loadRemoteConfig().keepAwake
 })
 
 function createWindow(): void {
@@ -74,6 +91,35 @@ function registerWindowControls(): void {
     win.isMaximized() ? win.unmaximize() : win.maximize()
   })
   ipcMain.on(IPC.WindowClose, (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+
+  // Open a link in the OS default app. Restricted to http(s): terminal output is
+  // untrusted, so we never hand arbitrary schemes (file:, custom protocols) to
+  // the shell, which could launch a local app or file.
+  ipcMain.handle(IPC.ShellOpenExternal, (_e, url: unknown) => {
+    if (typeof url !== 'string') return
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return
+    }
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      void shell.openExternal(parsed.href)
+    }
+  })
+
+  // Start a native OS drag for a file/folder so it can be dropped into Explorer
+  // or the desktop (copies it). Must be called synchronously during the drag
+  // gesture on the sender's webContents.
+  ipcMain.on(IPC.ShellStartDrag, (e, filePath: unknown) => {
+    if (typeof filePath !== 'string' || filePath === '') return
+    try {
+      if (!existsSync(filePath)) return
+      e.sender.startDrag({ file: filePath, icon: DRAG_ICON })
+    } catch {
+      /* the drag could not be started */
+    }
+  })
 }
 
 app.whenReady().then(() => {

@@ -27,7 +27,10 @@ export function registerRemoteIpc(server: RemoteServer): void {
   ipcMain.handle(IPC.RemoteGetConfig, () => loadRemoteConfig())
   ipcMain.handle(IPC.RemoteSetConfig, (_e, cfg: RemoteConfig) => {
     saveRemoteConfig(cfg)
-    return loadRemoteConfig()
+    const next = loadRemoteConfig()
+    // Apply keep-awake live so toggling it takes effect without a restart.
+    server.setKeepAwake(next.keepAwake)
+    return next
   })
 
   ipcMain.handle(IPC.RemotePairingNew, () => server.pairingPayload())
