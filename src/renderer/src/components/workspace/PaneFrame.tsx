@@ -7,6 +7,7 @@ import {
   FileCode2,
   Folder,
   GripVertical,
+  Pencil,
   Pin,
   Plus,
   SquareSplitHorizontal,
@@ -23,6 +24,7 @@ import { AgentChatPane } from '../agent/AgentChatPane'
 import { EditorPane } from '../editor/EditorPane'
 import { FloatingMenu } from '../common/FloatingMenu'
 import { ColorWheel } from '../common/ColorWheel'
+import { ContextMenu, type MenuAction } from '../terminal/ContextMenu'
 import { PANE_DRAG_TYPE } from './paneDrag'
 import type { Direction } from './layout'
 
@@ -301,6 +303,7 @@ export const PaneFrame = memo(function PaneFrame({
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [badgeMenu, setBadgeMenu] = useState<{ x: number; y: number } | null>(null)
   const [moveMenu, setMoveMenu] = useState<{ x: number; y: number } | null>(null)
+  const [headerMenu, setHeaderMenu] = useState<{ x: number; y: number } | null>(null)
   const [dropActive, setDropActive] = useState(false)
   const dropCounter = useRef(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -328,6 +331,71 @@ export const PaneFrame = memo(function PaneFrame({
   const KindIcon = pane.kind === 'agent' ? Bot : pane.kind === 'editor' ? FileCode2 : Terminal
   // Live cwd for terminals (reported by shell integration), spawn dir for agents.
   const dir = pane.kind === 'editor' ? undefined : liveCwd ?? pane.cwd
+
+  // Every header control, mirrored into a right-click menu so the actions stay
+  // reachable when the pane is too narrow to show the hover toolbar. Submenus
+  // (badge / split options / move) reopen at the click point via `headerMenu`.
+  const headerMenuActions: MenuAction[] = [
+    {
+      label: 'Rename',
+      icon: Pencil,
+      onClick: () => {
+        setDraft(pane.name)
+        setEditing(true)
+      }
+    },
+    {
+      label: pane.badge ? 'Change badge…' : 'Set badge…',
+      icon: Tag,
+      onClick: () => {
+        if (headerMenu) setBadgeMenu(headerMenu)
+      }
+    },
+    {
+      label: pane.pinned ? 'Unpin pane' : 'Pin pane',
+      icon: Pin,
+      onClick: () => togglePin(pane.id)
+    },
+    {
+      label: 'Split right',
+      icon: SquareSplitHorizontal,
+      separator: true,
+      onClick: () => splitPane(pane.id, 'row', { kind: 'terminal' })
+    },
+    {
+      label: 'Split down',
+      icon: SquareSplitVertical,
+      onClick: () => splitPane(pane.id, 'column', { kind: 'terminal' })
+    },
+    {
+      label: 'Split options…',
+      icon: ChevronDown,
+      onClick: () => {
+        if (headerMenu) setMenu(headerMenu)
+      }
+    },
+    {
+      label: 'Move to another deck…',
+      icon: ArrowRightLeft,
+      separator: true,
+      onClick: () => {
+        if (headerMenu) setMoveMenu(headerMenu)
+      }
+    },
+    {
+      label: 'Hide pane',
+      icon: EyeOff,
+      onClick: () => hidePane(pane.id)
+    },
+    {
+      label: 'Close pane',
+      icon: X,
+      danger: true,
+      separator: true,
+      disabled: pane.pinned,
+      onClick: () => closePane(pane.id)
+    }
+  ]
 
   return (
     <div
@@ -368,6 +436,14 @@ export const PaneFrame = memo(function PaneFrame({
         onDragEnd={() => {
           draggedPaneId = null
           setDropActive(false)
+        }}
+        onContextMenu={(e) => {
+          // Let the native menu handle the rename input; otherwise surface the
+          // full control set as a popup (essential when the pane is narrow).
+          // The pane is already activated by onPointerDownCapture on the way in.
+          if (editing) return
+          e.preventDefault()
+          setHeaderMenu({ x: e.clientX, y: e.clientY })
         }}
         className="group flex h-7 shrink-0 cursor-grab items-center gap-1.5 border-b border-edge-2 bg-raised pr-1 pl-2 active:cursor-grabbing"
       >
@@ -555,6 +631,14 @@ export const PaneFrame = memo(function PaneFrame({
       )}
       {moveMenu && (
         <MoveMenu paneId={pane.id} currentTabId={tabId} anchor={moveMenu} onClose={() => setMoveMenu(null)} />
+      )}
+      {headerMenu && (
+        <ContextMenu
+          x={headerMenu.x}
+          y={headerMenu.y}
+          actions={headerMenuActions}
+          onClose={() => setHeaderMenu(null)}
+        />
       )}
     </div>
   )

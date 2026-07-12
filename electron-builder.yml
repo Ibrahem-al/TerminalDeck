@@ -12,6 +12,14 @@ asarUnpack:
 extraResources:
   - from: resources/shell-integration
     to: shell-integration
+# In-app auto-update + downloads read from this repo's GitHub Releases.
+publish:
+  provider: github
+  owner: Ibrahem-al
+  repo: TerminalDeck
+  # Publish immediately (not a draft) so releases/latest/download and the
+  # in-app updater can see it.
+  releaseType: release
 win:
   icon: build/icon.ico
   target:
@@ -22,6 +30,10 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: TerminalDeck
+  # Version-less, dashed name so the website's stable releases/latest/download/
+  # link never needs bumping and electron-updater's latest.yml points at the
+  # same asset. (latest.yml records the version separately.)
+  artifactName: ${productName}-Setup.${ext}
 # node-pty ships prebuilt N-API binaries (ABI-stable), so don't recompile from
 # source — there's no C++ toolchain and the prebuilt binary already works.
 npmRebuild: false

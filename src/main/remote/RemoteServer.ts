@@ -27,7 +27,14 @@ import { bestLanUrl, lanUrls } from './lan'
 import { bearerFromHttp, tokenFromWsProtocols, verifyToken } from '../net/auth'
 import { ensureAllowedPath } from '../net/allowlist'
 import { consumePairingCode, mintToken, newPairingCode } from './pairing'
-import { listDevices, registerDevice, removePushSubsForDevice, setPushSubForDevice } from '../store/persist'
+import {
+  hasRemotePasscode,
+  listDevices,
+  registerDevice,
+  removePushSubsForDevice,
+  setPushSubForDevice,
+  verifyRemotePasscode
+} from '../store/persist'
 import { pushPublicKey } from './push'
 import { tailscaleStatus } from './tailscale'
 import { listListeningPorts } from '../preview/listPorts'
@@ -49,6 +56,13 @@ interface SocketMeta {
 
 const PAIR_FAIL_LIMIT = 10
 const PAIR_FAIL_WINDOW_MS = 5 * 60_000
+/**
+ * Ceiling on failed pairing attempts across ALL source IPs within the window.
+ * Behind Tailscale Funnel every request arrives from 127.0.0.1 (tailscaled
+ * proxies locally), which collapses per-IP limiting — so a global cap backstops
+ * brute force of the pairing code/passcode from the public internet.
+ */
+const GLOBAL_PAIR_FAIL_LIMIT = 30
 
 /** How often we ping a socket to probe liveness. */
 const HEARTBEAT_MS = 25_000
@@ -70,6 +84,8 @@ export class RemoteServer {
   private readonly sockets = new Set<WebSocket>()
   private readonly meta = new WeakMap<WebSocket, SocketMeta>()
   private readonly pairFails = new Map<string, { count: number; resetAt: number }>()
+  /** Window-scoped failed-pairing count across every IP (Funnel backstop). */
+  private globalPairFails = { count: 0, resetAt: 0 }
 
   /** Active powerSaveBlocker id while keep-awake is engaged, else null. */
   private blockerId: number | null = null
@@ -233,7 +249,9 @@ export class RemoteServer {
   private async bestPairingUrl(): Promise<string | null> {
     try {
       const ts = await tailscaleStatus(this.port)
-      if (ts.running && ts.serving && ts.fqdn) return `https://${ts.fqdn}`
+      // Funnel (public) or Serve (tailnet) both publish at https://<fqdn>; either
+      // gives the phone a stable origin that survives leaving the LAN.
+      if (ts.running && (ts.funnel || ts.serving) && ts.fqdn) return `https://${ts.fqdn}`
     } catch {
       /* fall through to LAN */
     }
@@ -247,6 +265,11 @@ export class RemoteServer {
     const path = url.pathname
 
     if (path === '/api/pair' && req.method === 'POST') return this.handlePair(req, res)
+    // Public, pre-pair probe: lets the phone know whether it must collect an
+    // access passcode before submitting (reveals only that one exists, never it).
+    if (path === '/api/pair-info' && req.method === 'GET') {
+      return json(res, 200, { passcodeRequired: hasRemotePasscode(), serverName: this.serverName })
+    }
 
     if (path.startsWith('/api/')) {
       const deviceId = verifyToken(bearerFromHttp(req))
@@ -364,29 +387,51 @@ export class RemoteServer {
     } catch {
       return json(res, 400, { error: 'invalid_body' })
     }
+    // Second factor: when a passcode is set it must be presented too. Verified
+    // BEFORE the one-time code is consumed, so a mistyped passcode doesn't burn
+    // the code (the user can retry without regenerating it). Both this and the
+    // code check return the SAME opaque error so the response never reveals which
+    // factor failed — otherwise a public attacker could confirm a guessed
+    // passcode independently of ever holding a live code (an auth oracle).
+    if (hasRemotePasscode() && !verifyRemotePasscode(String(body?.passcode ?? ''))) {
+      this.recordPairFail(ip)
+      return json(res, 401, { error: 'pairing_failed' })
+    }
     if (!body?.code || !consumePairingCode(String(body.code))) {
       this.recordPairFail(ip)
-      return json(res, 401, { error: 'invalid_or_expired_code' })
+      return json(res, 401, { error: 'pairing_failed' })
     }
     const token = mintToken()
     const ua = String(req.headers['user-agent'] ?? '')
     const device = registerDevice(body.deviceName ?? 'Phone', ua, token)
     this.pairFails.delete(ip)
+    this.globalPairFails = { count: 0, resetAt: 0 }
     this.onChange?.()
     const resp: PairResponse = { token, deviceId: device.id, serverName: this.serverName }
     return json(res, 200, resp)
   }
 
   private isRateLimited(ip: string): boolean {
+    const now = Date.now()
+    if (this.globalPairFails.resetAt > now && this.globalPairFails.count >= GLOBAL_PAIR_FAIL_LIMIT) return true
+    // Requests proxied by tailscaled (Funnel) all arrive from loopback, so a
+    // per-IP bucket would be shared by every phone — one attacker would lock out
+    // legitimate pairing. For those, rely solely on the global cap above.
+    if (isSharedSourceIp(ip)) return false
     const e = this.pairFails.get(ip)
-    return !!e && e.resetAt > Date.now() && e.count >= PAIR_FAIL_LIMIT
+    return !!e && e.resetAt > now && e.count >= PAIR_FAIL_LIMIT
   }
 
   private recordPairFail(ip: string): void {
     const now = Date.now()
-    const e = this.pairFails.get(ip)
-    if (!e || e.resetAt <= now) this.pairFails.set(ip, { count: 1, resetAt: now + PAIR_FAIL_WINDOW_MS })
-    else e.count++
+    if (!isSharedSourceIp(ip)) {
+      const e = this.pairFails.get(ip)
+      if (!e || e.resetAt <= now) this.pairFails.set(ip, { count: 1, resetAt: now + PAIR_FAIL_WINDOW_MS })
+      else e.count++
+    }
+    // Global backstop: one shared counter across all IPs (see GLOBAL_PAIR_FAIL_LIMIT).
+    if (this.globalPairFails.resetAt <= now) this.globalPairFails = { count: 1, resetAt: now + PAIR_FAIL_WINDOW_MS }
+    else this.globalPairFails.count++
   }
 
   /* ── WebSocket ─────────────────────────────────────────────────── */
@@ -535,6 +580,17 @@ export class RemoteServer {
 }
 
 /* ── helpers ──────────────────────────────────────────────────────── */
+
+/**
+ * True for source addresses that don't identify a single client: loopback (how
+ * Tailscale Funnel and local proxies present every request) and the 'unknown'
+ * fallback. Per-IP rate-limiting on these would be a shared bucket — an attacker
+ * could exhaust it to deny pairing to everyone — so callers fall back to the
+ * global cap for these instead.
+ */
+function isSharedSourceIp(ip: string): boolean {
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip === 'unknown'
+}
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })

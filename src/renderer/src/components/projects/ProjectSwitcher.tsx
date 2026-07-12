@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { FolderGit2, PencilLine, Plus, Search, Trash2 } from 'lucide-react'
+import { FolderGit2, PencilLine, Plus, Search, Star, Trash2 } from 'lucide-react'
 import type { Project } from '@shared/types'
 import { sortedProjects, useProjects } from '../../store/projects'
+import { useSettings } from '../../store/settings'
 import { relativeTime } from '../terminal/time'
 import { ConfirmDialog } from '../common/ConfirmDialog'
 
@@ -16,6 +17,11 @@ export function ProjectSwitcher({ onClose, onNewProject, onEditProject }: Props)
   const activeProjectId = useProjects((s) => s.activeProjectId)
   const openProject = useProjects((s) => s.openProject)
   const deleteProject = useProjects((s) => s.deleteProject)
+  const defaultProjectId = useSettings((s) => s.settings.general.defaultProjectId)
+
+  const toggleDefault = (id: string): void => {
+    useSettings.getState().update('general', { defaultProjectId: defaultProjectId === id ? null : id })
+  }
 
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
@@ -129,6 +135,26 @@ export function ProjectSwitcher({ onClose, onNewProject, onEditProject }: Props)
                 <span className="shrink-0 font-ui text-[10.5px] text-ink-3">
                   {project.lastOpenedAt ? relativeTime(project.lastOpenedAt, Date.now()) : 'never opened'}
                 </span>
+                <button
+                  aria-label={
+                    project.id === defaultProjectId
+                      ? `Unpin ${project.name} as default project`
+                      : `Set ${project.name} as default project`
+                  }
+                  title={
+                    project.id === defaultProjectId
+                      ? 'Default project — new tabs open here'
+                      : 'Set as default project (new tabs open here)'
+                  }
+                  onClick={() => toggleDefault(project.id)}
+                  className={`shrink-0 rounded p-1 transition-opacity duration-100 ${
+                    project.id === defaultProjectId
+                      ? 'text-accent opacity-100'
+                      : 'text-ink-3 opacity-0 group-hover:opacity-100 hover:text-ink'
+                  }`}
+                >
+                  <Star size={12} fill={project.id === defaultProjectId ? 'currentColor' : 'none'} />
+                </button>
                 <span className="flex shrink-0 gap-0.5 opacity-0 transition-opacity duration-100 group-hover:opacity-100">
                   <button
                     aria-label={`Edit ${project.name}`}
@@ -154,7 +180,7 @@ export function ProjectSwitcher({ onClose, onNewProject, onEditProject }: Props)
         </div>
 
         <p className="border-t border-edge-2 px-3.5 py-2 font-ui text-[10.5px] text-ink-3">
-          Enter opens · Ctrl+Shift+N new project · deleting a project never touches its files
+          Enter opens · ★ sets the default project · Ctrl+Shift+N new project
         </p>
       </div>
 
@@ -165,6 +191,7 @@ export function ProjectSwitcher({ onClose, onNewProject, onEditProject }: Props)
           confirmLabel="Delete project"
           danger
           onConfirm={() => {
+            // deleteProject clears the pinned default itself if this was it.
             void deleteProject(confirmDelete.id)
             setConfirmDelete(null)
           }}

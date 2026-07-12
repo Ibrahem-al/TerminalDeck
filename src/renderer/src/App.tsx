@@ -17,7 +17,10 @@ import { useKanban } from './store/kanban'
 import { useSettings } from './store/settings'
 import { usePaneCwd } from './store/paneCwd'
 import { usePtySessions } from './store/ptySessions'
-import { initSessionAutoSave, restoreSession } from './session'
+import { useEditorStore } from './store/editor'
+import { useUpdater } from './store/updater'
+import { initSessionAutoSave, persistSessionNow, restoreSession } from './session'
+import { CloseConfirm } from './components/common/CloseConfirm'
 import { sendToPane } from './components/terminal/inputBus'
 import type { Project } from '@shared/types'
 
@@ -31,6 +34,7 @@ export default function App(): React.JSX.Element {
   const [switcherOpen, setSwitcherOpen] = useState(false)
   const [remoteOpen, setRemoteOpen] = useState(false)
   const [projectForm, setProjectForm] = useState<{ project: Project | null } | null>(null)
+  const [closePrompt, setClosePrompt] = useState<{ terminals: number; agents: number; dirtyFiles: number } | null>(null)
 
   // boot: settings → projects → optional session restore → auto-save on
   useEffect(() => {
@@ -39,17 +43,64 @@ export default function App(): React.JSX.Element {
       await useProjects.getState().load()
 
       let restored = false
-      if (useSettings.getState().settings.general.startup === 'restore') {
+      // Only the primary window restores the saved session; extra windows open
+      // as fresh scratch workspaces so they can't duplicate or clobber it.
+      if (
+        useSettings.getState().settings.general.startup === 'restore' &&
+        window.quarterdeck.window.isPrimary
+      ) {
         const saved = await window.quarterdeck.session.load()
         restored = await restoreSession(saved)
       }
       setBooted(true)
-      initSessionAutoSave()
+      // Only the session-owning window autosaves; a promoted survivor starts
+      // later via onBecomePrimary.
+      if (window.quarterdeck.window.isPrimary) initSessionAutoSave()
 
-      if (!restored && useProjects.getState().projects.length > 0) {
-        setSwitcherOpen(true)
+      if (!restored) {
+        // Prefer the pinned default project on a cold start; fall back to the
+        // switcher when projects exist but none is pinned.
+        const defaultId = useSettings.getState().settings.general.defaultProjectId
+        const projects = useProjects.getState().projects
+        if (defaultId && projects.some((p) => p.id === defaultId)) {
+          void useProjects.getState().openProject(defaultId)
+        } else if (projects.length > 0) {
+          setSwitcherOpen(true)
+        }
       }
     })()
+  }, [])
+
+  // Confirm before this window closes if it still has live terminals/agents or
+  // unsaved edits (any close path lands here via the main process). Empty windows
+  // — or when the setting is off — close straight through.
+  useEffect(() => {
+    return window.quarterdeck.window.onCloseRequest(() => {
+      const panes = Object.values(useWorkspace.getState().panes)
+      const terminals = panes.filter((p) => p.kind === 'terminal').length
+      const agents = panes.filter((p) => p.kind === 'agent').length
+      const dirtyFiles = Object.values(useEditorStore.getState().dirty).filter(Boolean).length
+      const confirmOnClose = useSettings.getState().settings.general.confirmOnClose
+      if (!confirmOnClose || (terminals === 0 && agents === 0 && dirtyFiles === 0)) {
+        window.quarterdeck.window.confirmClose()
+        return
+      }
+      setClosePrompt({ terminals, agents, dirtyFiles })
+    })
+  }, [])
+
+  // If the primary (session-owning) window closes, main promotes this window;
+  // take over persistence and capture the current workspace right away.
+  useEffect(() => {
+    return window.quarterdeck.window.onBecomePrimary(() => {
+      initSessionAutoSave()
+      persistSessionNow()
+    })
+  }, [])
+
+  // Wire the in-app updater once (subscribes to update events, silent launch check).
+  useEffect(() => {
+    useUpdater.getState().init()
   }, [])
 
   // each tab behaves like its own project: keep the active project in step with
@@ -142,6 +193,8 @@ export default function App(): React.JSX.Element {
         handle(() => ex.toggleHidden())
       } else if (e.shiftKey && key === 'k') {
         handle(() => useKanban.getState().toggleOpen())
+      } else if (e.shiftKey && key === 'm') {
+        handle(() => window.quarterdeck.window.newWindow())
       } else if (e.shiftKey && key === 'f') {
         handle(() => {
           if (!ex.visible) ex.toggleSidebar()
@@ -174,6 +227,7 @@ export default function App(): React.JSX.Element {
         onNewTab={() => setPickerOpen(true)}
         onOpenProjects={() => setSwitcherOpen(true)}
         onOpenRemote={() => setRemoteOpen(true)}
+        onNewWindow={() => window.quarterdeck.window.newWindow()}
       />
       <div className="flex min-h-0 flex-1">
         {sidebarSide === 'left' && <Sidebar />}
@@ -192,8 +246,9 @@ export default function App(): React.JSX.Element {
       <Toaster />
       {pickerOpen && (
         <TemplatePicker
-          onPick={(template) => {
-            useWorkspace.getState().addTab(template)
+          onPick={(template, projectId) => {
+            if (projectId) void useProjects.getState().openProject(projectId, template)
+            else useWorkspace.getState().addTab(template)
             setPickerOpen(false)
           }}
           onClose={() => setPickerOpen(false)}
@@ -210,6 +265,14 @@ export default function App(): React.JSX.Element {
       {remoteOpen && <RemotePanel onClose={() => setRemoteOpen(false)} />}
       {projectForm && (
         <ProjectForm project={projectForm.project} onClose={() => setProjectForm(null)} />
+      )}
+      {closePrompt && (
+        <CloseConfirm
+          terminals={closePrompt.terminals}
+          agents={closePrompt.agents}
+          dirtyFiles={closePrompt.dirtyFiles}
+          onCancel={() => setClosePrompt(null)}
+        />
       )}
     </div>
   )

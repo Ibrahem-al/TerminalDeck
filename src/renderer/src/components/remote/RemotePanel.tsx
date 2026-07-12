@@ -2,7 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Check,
   FolderOpen,
+  Globe,
+  Link2,
   Loader2,
+  Lock,
   Plus,
   QrCode as QrIcon,
   RefreshCw,
@@ -37,6 +40,8 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
   const [notify, setNotify] = useState<NotifyConfig | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [passcodeDraft, setPasscodeDraft] = useState('')
+  const [linkCopied, setLinkCopied] = useState(false)
 
   useEffect(() => {
     void rd().status().then(setStatus)
@@ -81,6 +86,42 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
   const tailscaleUp = (): Promise<void> => run('ts-up', async () => setTs(await rd().tailscaleUp()))
   const tailscaleServe = (enable: boolean): Promise<void> =>
     run('ts-serve', async () => setTs(await rd().tailscaleServe(enable)))
+  const tailscaleFunnel = (enable: boolean): Promise<void> =>
+    run('ts-funnel', async () => {
+      setTs(await rd().tailscaleFunnel(enable))
+      // A code shown before publishing encodes a LAN URL; drop it so the next one
+      // carries the public Funnel origin ("works from anywhere").
+      if (enable) setPairing(null)
+    })
+
+  const savePasscode = (): Promise<void> =>
+    run('passcode', async () => {
+      const v = passcodeDraft.trim()
+      if (v.length < 6) return
+      setConfig(await rd().setPasscode(v))
+      setPasscodeDraft('')
+    })
+
+  const clearPasscode = (): Promise<void> =>
+    run('passcode', async () => {
+      // Main tears down public Funnel before clearing the passcode (enforced in
+      // RemoteSetPasscode), so just clear and refresh the status the row reflects.
+      setConfig(await rd().setPasscode(null))
+      setTs(await rd().tailscale())
+      setPasscodeDraft('')
+    })
+
+  const copyLink = async (): Promise<void> => {
+    if (!pairing) return
+    const link = `${pairing.url.replace(/\/+$/, '')}/?c=${pairing.code}`
+    try {
+      await navigator.clipboard.writeText(link)
+      setLinkCopied(true)
+      window.setTimeout(() => setLinkCopied(false), 1500)
+    } catch {
+      setError('Could not copy the pairing link to the clipboard.')
+    }
+  }
 
   const showQr = (): Promise<void> =>
     run('pair', async () => {
@@ -212,6 +253,53 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
             </p>
           </div>
 
+          {/* access passcode — second pairing factor, required for public Funnel */}
+          <div className={cardCls}>
+            <div className="mb-1.5 flex items-center gap-1.5">
+              <Lock size={12} className="text-ink-3" />
+              <span className={labelCls + ' mb-0'}>Access passcode</span>
+              {config?.hasPasscode && (
+                <span className="ml-auto flex items-center gap-1 rounded-full bg-ok-soft px-2 py-0.5 font-ui text-[10px] font-semibold text-ok">
+                  <Check size={10} /> Set
+                </span>
+              )}
+            </div>
+            <p className="mb-2.5 font-ui text-[11.5px] text-ink-3">
+              A second secret your phone enters when pairing. Required before you expose the Agent to the public
+              internet, and never included in a pairing link — so a shared link alone can’t pair.
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={passcodeDraft}
+                onChange={(e) => setPasscodeDraft(e.target.value)}
+                placeholder={config?.hasPasscode ? 'New passcode…' : 'Set a passcode (min 6 chars)…'}
+                autoComplete="new-password"
+                className="min-w-0 flex-1 rounded-md border border-edge bg-term px-2.5 py-1.5 font-ui text-[12.5px] text-ink outline-none focus-visible:border-accent"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void savePasscode()
+                }}
+              />
+              <button
+                onClick={() => void savePasscode()}
+                disabled={busy === 'passcode' || passcodeDraft.trim().length < 6}
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 font-ui text-[12px] font-semibold text-ink-inverse disabled:opacity-50"
+              >
+                {busy === 'passcode' && <Loader2 size={12} className="animate-spin" />}
+                {config?.hasPasscode ? 'Change' : 'Set'}
+              </button>
+              {config?.hasPasscode && (
+                <button
+                  onClick={() => void clearPasscode()}
+                  disabled={busy === 'passcode'}
+                  className="rounded-md border border-edge px-2.5 py-1.5 font-ui text-[12px] font-medium text-danger hover:bg-danger-soft disabled:opacity-50"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* step 1 — tailscale */}
           <div className={cardCls}>
             <div className="mb-2 flex items-center justify-between">
@@ -227,8 +315,10 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
             <TailscaleSteps
               ts={ts}
               busy={busy}
+              hasPasscode={config?.hasPasscode ?? false}
               onUp={() => void tailscaleUp()}
               onServe={(en) => void tailscaleServe(en)}
+              onFunnel={(en) => void tailscaleFunnel(en)}
             />
           </div>
 
@@ -245,12 +335,21 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
                 <div className="rounded-lg bg-base px-4 py-2 font-mono text-[22px] font-bold tracking-[0.3em] text-accent">
                   {pairing.code}
                 </div>
-                <button
-                  onClick={() => void showQr()}
-                  className="flex items-center gap-1.5 font-ui text-[11.5px] font-medium text-ink-3 hover:text-ink"
-                >
-                  <RefreshCw size={11} /> New code
-                </button>
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={() => void copyLink()}
+                    className="flex items-center gap-1.5 font-ui text-[11.5px] font-medium text-ink-3 hover:text-ink"
+                  >
+                    {linkCopied ? <Check size={11} className="text-ok" /> : <Link2 size={11} />}
+                    {linkCopied ? 'Link copied' : 'Copy pairing link'}
+                  </button>
+                  <button
+                    onClick={() => void showQr()}
+                    className="flex items-center gap-1.5 font-ui text-[11.5px] font-medium text-ink-3 hover:text-ink"
+                  >
+                    <RefreshCw size={11} /> New code
+                  </button>
+                </div>
               </div>
             ) : (
               <button
@@ -263,7 +362,11 @@ export function RemotePanel({ onClose }: { onClose: () => void }): React.JSX.Ele
               </button>
             )}
             <p className="mt-2 font-ui text-[11px] text-ink-3">
-              Your phone needs the free Tailscale app, signed in to the same account. Codes expire in 5 minutes.
+              {ts?.funnel
+                ? 'Published to the internet — your phone needs no app; open the link from anywhere. '
+                : 'Over your tailnet, your phone needs the free Tailscale app signed in to the same account. '}
+              {config?.hasPasscode ? 'It will also ask for your access passcode. ' : ''}
+              Codes expire in 5 minutes.
             </p>
           </div>
 
@@ -393,13 +496,17 @@ function linkify(text: string): React.ReactNode {
 function TailscaleSteps({
   ts,
   busy,
+  hasPasscode,
   onUp,
-  onServe
+  onServe,
+  onFunnel
 }: {
   ts: TailscaleStatus | null
   busy: string | null
+  hasPasscode: boolean
   onUp: () => void
   onServe: (enable: boolean) => void
+  onFunnel: (enable: boolean) => void
 }): React.JSX.Element {
   if (!ts) return <p className="font-ui text-[12px] text-ink-3">Checking…</p>
 
@@ -444,9 +551,17 @@ function TailscaleSteps({
 
       <StatusRow
         ok={ts.serving}
-        label={ts.serving ? `Published: https://${ts.fqdn}` : 'Publish the Agent over HTTPS'}
+        label={
+          ts.funnel
+            ? `On your tailnet too (via Funnel): https://${ts.fqdn}`
+            : ts.serving
+              ? `On your tailnet: https://${ts.fqdn}`
+              : 'Publish on your tailnet (HTTPS)'
+        }
       >
-        {ts.running && (
+        {/* Hidden while funnelling: Funnel is a superset of Serve, so a "Stop"
+            here would run `serve reset` and tear down Funnel too — a footgun. */}
+        {ts.running && !ts.funnel && (
           <button
             onClick={() => onServe(!ts.serving)}
             disabled={busy === 'ts-serve'}
@@ -459,6 +574,46 @@ function TailscaleSteps({
           </button>
         )}
       </StatusRow>
+
+      <StatusRow
+        ok={ts.funnel}
+        label={ts.funnel ? 'Reachable from anywhere (Funnel)' : 'Allow access from anywhere (Funnel)'}
+      >
+        {ts.running &&
+          (ts.funnel ? (
+            <button
+              onClick={() => onFunnel(false)}
+              disabled={busy === 'ts-funnel'}
+              className="flex items-center gap-1.5 rounded-md border border-edge px-2.5 py-1 font-ui text-[11.5px] font-semibold text-ink-2 disabled:opacity-50"
+            >
+              {busy === 'ts-funnel' && <Loader2 size={11} className="animate-spin" />}
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={() => onFunnel(true)}
+              disabled={busy === 'ts-funnel' || !hasPasscode}
+              title={hasPasscode ? undefined : 'Set an access passcode first'}
+              className="flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1 font-ui text-[11.5px] font-semibold text-ink-inverse disabled:opacity-50"
+            >
+              {busy === 'ts-funnel' && <Loader2 size={11} className="animate-spin" />}
+              <Globe size={11} />
+              Publish
+            </button>
+          ))}
+      </StatusRow>
+
+      {ts.running && !ts.funnel && !hasPasscode && (
+        <p className="pl-6 font-ui text-[11px] text-ink-3">
+          Set an access passcode above to allow public (Funnel) access — your phone then needs no app at all.
+        </p>
+      )}
+      {ts.running && ts.funnel && (
+        <p className="rounded-md bg-warn/10 px-2.5 py-1.5 font-ui text-[11px] text-warn">
+          Anyone on the internet can reach the sign-in — pairing still needs both a fresh code and your access
+          passcode. Stop Funnel when you don’t need remote access.
+        </p>
+      )}
     </div>
   )
 }

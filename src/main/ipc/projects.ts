@@ -11,6 +11,7 @@ import {
   saveSession,
   saveSettings
 } from '../store/persist'
+import { aiKeepAwake } from '../power/keepAwake'
 
 export function registerProjectsIpc(): void {
   ipcMain.handle(IPC.ProjectsList, (): Project[] => listProjects())
@@ -21,7 +22,11 @@ export function registerProjectsIpc(): void {
   ipcMain.handle(IPC.KanbanSave, (_e, cards: KanbanCard[]) => saveKanban(cards))
 
   ipcMain.handle(IPC.SettingsLoad, (): AppSettings => loadSettings())
-  ipcMain.handle(IPC.SettingsSave, (_e, settings: AppSettings) => saveSettings(settings))
+  ipcMain.handle(IPC.SettingsSave, (_e, settings: AppSettings) => {
+    saveSettings(settings)
+    // Live-apply the keep-awake preference so toggling it takes effect at once.
+    aiKeepAwake.setEnabled(settings.general.keepAwakeWhileBusy)
+  })
   ipcMain.handle(IPC.AppVersion, (): string => app.getVersion())
 
   ipcMain.handle(IPC.SessionLoad, (): unknown => loadSession())

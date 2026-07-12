@@ -102,7 +102,16 @@ interface WorkspaceStore {
   setActiveTab: (tabId: string) => void
   reorderTabs: (from: number, to: number) => void
   cycleTabColor: (tabId: string) => void
+  /** Sets a tab's color dot directly (right-click → color swatch). */
+  setTabColor: (tabId: string, color: string) => void
   renameTab: (tabId: string, name: string) => void
+  /**
+   * Rebinds a tab to a project (or null to unbind), changing only which project
+   * new panes spawn into — the existing layout and live sessions are untouched.
+   * When `color` is given the tab's dot follows the project's color. Callers must
+   * re-sync project context themselves when the rebinding tab is the active one.
+   */
+  setTabProject: (tabId: string, projectId: string | null, color?: string) => void
 
   /** Returns the new pane's id, or null when the pane limit blocks the split. */
   splitPane: (paneId: string, direction: Direction, spec: NewPaneSpec) => string | null
@@ -259,9 +268,23 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
       })
     })),
 
+  setTabColor: (tabId, color) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, color } : t))
+    })),
+
   renameTab: (tabId, name) =>
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === tabId && name.trim() !== '' ? { ...t, name: name.trim() } : t))
+    })),
+
+  setTabProject: (tabId, projectId, color) =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, projectId: projectId ?? undefined, color: color ?? t.color }
+          : t
+      )
     })),
 
   splitPane: (paneId, direction, spec) => {

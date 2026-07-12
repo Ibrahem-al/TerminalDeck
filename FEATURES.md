@@ -253,11 +253,12 @@ A project (`Project` type) captures a reusable workspace:
 
 - `session.ts` serializes tabs, panes, layouts/sizes, active tab, active project, sidebar root, and open editor files (debounced autosave + on `beforeunload`).
 - On launch (`Settings → startup = restore`), it rehydrates everything; shells respawn fresh in their saved working directories (terminal scrollback itself is not restorable). **Env vars are re-derived from the encrypted project store**, never stored in the session file.
+- **Only the primary window** restores and persists the session (see [§4.14](#414-multiple-windows)); extra windows are ephemeral and never touch the session store.
 
 ### 4.11 Settings
 
 Live-applying panel (`store/settings.ts`, `DEFAULT_SETTINGS`):
-- **General:** default shell, default template, startup (restore/empty), theme, default directory, sidebar side.
+- **General:** default shell, default template, startup (restore/empty), theme, default directory, sidebar side, keep-awake-while-busy, confirm-before-closing.
 - **Editor:** font size, tab size, word wrap, minimap, format-on-save.
 - **Terminal:** font size, scrollback, cursor style/blink, bell, the copy/paste matrix, click-to-cursor mode, replace-selection-on-type.
 - **Themes:** the gallery with hover-to-preview.
@@ -280,6 +281,20 @@ The headline feature — see [§8](#8-remotedeck-protocol--internals) for protoc
 - **Routing** (`NotifyConfig`, default `phone`, `minDurationSec = 20`): **Phone only** / Desktop only / Both / Off, with a duration threshold so trivial commands never alert.
 - **Phone = real Web Push:** a VAPID keypair is generated once (`remote/push.ts`); the phone subscribes via its browser push service and the service worker shows the notification — even when the PWA is **closed/backgrounded** and on a different network. The Agent POSTs encrypted messages to the push endpoint over the internet (prunes 404/410 endpoints).
 - **Desktop = native** OS notification via Electron `Notification` (with `setAppUserModelId` so Windows displays it).
+
+### 4.14 Multiple windows
+
+- **Open independent windows** from the title-bar button or **Ctrl+Shift+M** (`WindowNew` → `createWindow(false)`). Each window is a full, independent workspace (its own tabs, panes, sidebar, editors).
+- **Single session owner:** only the **primary** window (the one created at launch) restores and persists the saved session. Extra windows are ephemeral scratch workspaces — they start fresh and never write the session store, so they can't duplicate or clobber it. Role is passed to the sandboxed preload via `additionalArguments` (`--qd-window-role=…`) and read from `process.argv` as `window.isPrimary`.
+- **RemoteDeck stays correct across windows:** `sessionRegistry` merges each window's reported panes keyed by `webContents.id` (deduped by session id), and drops a window's slice on close — so a phone sees every window's terminals, not just the last one to report.
+- **Close confirmation:** every close path (✕ button, Alt+F4, taskbar, app quit) funnels through the main-process `close` handler, which asks the renderer first (`WindowCloseRequest`). If the window has live terminals/agents or unsaved editor files (and `confirmOnClose` is on), an in-app dialog warns before killing them; empty windows close straight through. Confirming replies `WindowConfirmClose` → the window is allowed to close.
+
+### 4.15 In-app updates
+
+- **electron-updater** (`main/updater/updater.ts`) reads the GitHub Releases feed configured under `publish:` in `electron-builder.yml` (`Ibrahem-al/TerminalDeck`); electron-builder bakes `app-update.yml` into the package so no runtime config is needed.
+- **Flow:** a silent check runs ~4s after launch and on demand from **Settings → Updates**. `autoDownload` is off (no surprise data use) and `autoInstallOnAppQuit` is on. The user downloads on click, watches progress, then **Restart & install** (`quitAndInstall`). A toast surfaces a ready update from any screen.
+- **State** is broadcast to every window (`UpdateStatus`) and mirrored in `store/updater.ts`. Unpackaged dev builds report a stable `dev` state instead of erroring.
+- **Preserves data:** the NSIS in-place update keeps settings, projects, and paired phones. Builds are unsigned, so the updater verifies the SHA-512 from `latest.yml` rather than a code signature.
 
 ---
 
@@ -387,11 +402,12 @@ Nothing is sent to any server; there are no accounts and no telemetry.
 
 - **`electron.vite.config.ts`** builds main (CJS, `externalizeDepsPlugin`), preload, and renderer (React + Tailwind v4 + path aliases `@renderer`/`@main`/`@shared`).
 - **`vite.remote.config.ts`** builds the PWA (`root: src/remote`, `base: './'`, `publicDir: src/remote/public`) → `out/remote`.
-- **Scripts:** `dev` (electron-vite dev), `build` (`electron-vite build && build:remote`), `build:remote` (the PWA), `dist` (`electron-vite build && build:remote && electron-builder --win`), `typecheck` (strict, main + web).
-- **`electron-builder.yml`** (NSIS): `appId app.terminaldeck.desktop`, `productName TerminalDeck`, custom `build/icon.ico`, `oneClick:false`, `perMachine:false`, `allowToChangeInstallationDirectory`, desktop shortcut. `node-pty` is `asarUnpack`ed (native binaries can't load from inside asar); `npmRebuild:false` (prebuilt N-API binaries).
+- **Scripts:** `dev` (electron-vite dev), `build` (`electron-vite build && build:remote`), `build:remote` (the PWA), `dist` (`electron-vite build && build:remote && electron-builder --win`), `release` (`… && electron-builder --win --publish always`), `typecheck` (strict, main + web).
+- **`electron-builder.yml`** (NSIS): `appId app.terminaldeck.desktop`, `productName TerminalDeck`, custom `build/icon.ico`, `oneClick:false`, `perMachine:false`, `allowToChangeInstallationDirectory`, desktop shortcut, `artifactName: ${productName}-Setup.${ext}` (version-less → stable download link), and `publish: github` (`Ibrahem-al/TerminalDeck`) which feeds both the website download and the in-app updater. `node-pty` is `asarUnpack`ed (native binaries can't load from inside asar); `npmRebuild:false` (prebuilt N-API binaries).
 - **`build/installer.nsh`** — a `customInit` NSIS hook that detects a previous install (HKCU/HKLM) and prompts **"remove the old version?"** before installing (app data is preserved).
 - The app icon is generated by `scripts/make-icon.ps1` (.NET System.Drawing → multi-size DIB `.ico`).
-- **Output:** `dist/TerminalDeck Setup <version>.exe` (~120 MB). Currently **unsigned** (SmartScreen warns on first run → *More info → Run anyway*).
+- **Output:** `dist/TerminalDeck-Setup.exe` (~120 MB, version-less for a stable download link) plus `latest.yml` + `.blockmap` for the updater. Currently **unsigned** (SmartScreen warns on first run → *More info → Run anyway*); the updater verifies the SHA-512 from `latest.yml`, so in-place updates work unsigned.
+- **`npm run release`** (with `GH_TOKEN`) builds and publishes the installer + `latest.yml` to the GitHub Release. See [§4.15](#415-in-app-updates).
 
 ---
 
@@ -424,6 +440,7 @@ Self-tests (`scripts/`): `pty-selftest.js` (PTY round-trip inside Electron), `in
 | Shortcut | Action |
 |---|---|
 | `Ctrl+T` / `Ctrl+W` | New / close workspace tab |
+| `Ctrl+Shift+M` | New app window |
 | `Ctrl+1`–`9` | Switch workspace tab |
 | `Ctrl+D` / `Ctrl+Shift+D` | Split pane right / down |
 | `Ctrl+Enter` | Launch Claude Code in active pane |
@@ -443,7 +460,7 @@ Self-tests (`scripts/`): `pty-selftest.js` (PTY round-trip inside Electron), `in
 
 **Current limitations (honest):**
 - Windows-only (PowerShell/ConPTY/DPAPI-centric).
-- Installer is **unsigned** (SmartScreen warning).
+- Installer is **unsigned** (SmartScreen warning); the in-app updater still works (SHA-512-verified), but first install shows the SmartScreen prompt.
 - `cmd.exe` has no shell integration → no command-completion detection/notifications there.
 - Terminal scrollback isn't restored across restarts (shells respawn clean in saved dirs).
 - RemoteDeck requires the PC awake + Tailscale Serve/HTTPS enabled; iOS push needs home-screen install.
@@ -453,8 +470,8 @@ Self-tests (`scripts/`): `pty-selftest.js` (PTY round-trip inside Electron), `in
 - Code-signing the installer.
 - RemoteDeck live **preview proxy** (load a local dev server on the phone over the tailnet).
 - **WSL + tmux** session discovery (pick up agent sessions started outside the app; survive app restarts).
-- Optional macOS/Linux support; update channels.
+- Optional macOS/Linux support; update channels (beta/stable).
 
 ---
 
-*TerminalDeck v0.2.0 — fully local, fully private, Windows-first. Command your fleet.*
+*TerminalDeck v0.2.1 — fully local, fully private, Windows-first. Command your fleet.*

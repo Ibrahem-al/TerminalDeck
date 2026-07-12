@@ -15,6 +15,8 @@ A chat-style terminal workspace for commanding parallel AI agents. Fully local, 
 - **Kanban board** (global) — five columns, drag & drop, markdown cards, priorities/tags, send-a-card-to-a-pane (terminal command or agent prompt), and exit-0 auto-offers to move cards to In Review.
 - **Projects** — root dir, default shell/layout, encrypted env vars (Windows DPAPI), auto-start commands with pane targeting and delays.
 - **9 original themes** (Settings → Themes, with hover-to-preview); **session restore**; live-applying settings.
+- **Multiple windows** — open independent workspaces (title-bar button or Ctrl+Shift+M); only the launch window restores/persists the saved session, so extra windows stay ephemeral. Closing a window with live terminals, running agents, or unsaved files asks first (toggle in Settings → General).
+- **In-app updates** — TerminalDeck checks GitHub Releases on launch and from Settings → Updates, downloads in the background, and installs on restart; your settings, projects, and paired phones are preserved. No reinstalling from the website.
 
 ## Prerequisites
 
@@ -47,11 +49,23 @@ npm run build   # bundle main/preload/renderer to out/
 npm run dist    # + package a Windows installer into dist/
 ```
 
+## Releasing & auto-update
+
+The app auto-updates from the GitHub Releases of `Ibrahem-al/TerminalDeck` (configured under `publish:` in `electron-builder.yml`). To cut a release:
+
+```sh
+npm version patch                 # bump the version (also update the website)
+GH_TOKEN=<token> npm run release  # build + publish the installer, latest.yml, and blockmap
+```
+
+`npm run release` runs `electron-builder --win --publish always`, which uploads `TerminalDeck-Setup.exe` (version-less, so the website's download link is stable) plus the `latest.yml` feed that installed apps poll. Builds are unsigned (SmartScreen warns on first install; the in-place updater still works, since it verifies the SHA-512 from `latest.yml`).
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |
 |---|---|
 | Ctrl+T | New workspace tab (template picker) |
+| Ctrl+Shift+M | New app window |
 | Ctrl+W | Close current workspace tab |
 | Ctrl+1–9 | Switch workspace tab |
 | Ctrl+D / Ctrl+Shift+D | Split pane right / down |

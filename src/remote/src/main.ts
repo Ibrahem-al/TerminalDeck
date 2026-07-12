@@ -1,7 +1,7 @@
 import './ui/styles.css'
 import type { RemoteSessionInfo } from '@shared/types'
 import { Transport, type ConnState } from './net/Transport'
-import { createSession, deleteSession, listPorts, listSessions, pair } from './net/api'
+import { createSession, deleteSession, getPairInfo, listPorts, listSessions, pair } from './net/api'
 import { TerminalView } from './terminal/TerminalView'
 import { buildKeyBar } from './terminal/KeyBar'
 import { isIOS, isStandalone, registerSW } from './pwa/register-sw'
@@ -39,6 +39,10 @@ function renderPairing(): void {
   code.autocapitalize = 'characters'
   code.style.textTransform = 'uppercase'
   const name = input('This device', defaultDeviceName())
+  const passcode = input('Access passcode (if one is set)', '')
+  passcode.type = 'password'
+  passcode.autocapitalize = 'off'
+  passcode.autocomplete = 'current-password'
   const err = el('p', 'error')
   const btn = button('Pair', 'primary')
 
@@ -47,7 +51,7 @@ function renderPairing(): void {
     btn.disabled = true
     btn.textContent = 'Pairing…'
     try {
-      const res = await pair(code.value.trim().toUpperCase(), name.value.trim())
+      const res = await pair(code.value.trim().toUpperCase(), name.value.trim(), passcode.value.trim() || undefined)
       localStorage.setItem(TOKEN_KEY, res.token)
       history.replaceState(null, '', location.pathname)
       startApp(res.token)
@@ -58,17 +62,37 @@ function renderPairing(): void {
     }
   }
   btn.addEventListener('click', () => void submit())
-  code.addEventListener('keydown', (e) => {
-    if ((e as KeyboardEvent).key === 'Enter') void submit()
-  })
+  for (const inputEl of [code, passcode]) {
+    inputEl.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') void submit()
+    })
+  }
 
-  card.append(field('Code', code), field('Name', name), btn, err)
+  card.append(field('Code', code), field('Name', name), field('Passcode', passcode), btn, err)
   if (isIOS() && !isStandalone()) {
     card.append(el('p', 'hint', 'Tip: tap the Share button → "Add to Home Screen" to install RemoteDeck.'))
   }
   app.append(card)
 
-  if (presetCode) void submit()
+  // Auto-submit a scanned/opened pairing link — but if the desktop requires an
+  // access passcode (the link never carries it), don't waste a failed attempt:
+  // prompt for the passcode and let the user submit. Falls through to a plain
+  // attempt if the probe is unreachable.
+  if (presetCode) {
+    void (async () => {
+      try {
+        const info = await getPairInfo()
+        if (info.passcodeRequired && passcode.value.trim() === '') {
+          err.textContent = 'This desktop needs an access passcode. Enter the one shown on the desktop, then tap Pair.'
+          passcode.focus()
+          return
+        }
+      } catch {
+        /* probe unreachable — just try to pair */
+      }
+      void submit()
+    })()
+  }
 }
 
 /* ── app ───────────────────────────────────────────────────────────── */
@@ -413,6 +437,11 @@ function defaultDeviceName(): string {
 }
 function humanError(e: unknown): string {
   const m = e instanceof Error ? e.message : String(e)
+  // The server returns one opaque error for both a wrong code and a wrong
+  // passcode (so it can't be used to confirm a passcode guess), so the message
+  // has to cover both.
+  if (m.includes('pairing_failed'))
+    return 'Pairing failed. Check the code and access passcode, or generate a new code on the desktop.'
   if (m.includes('invalid_or_expired')) return 'That code is wrong or expired. Generate a new one on the desktop.'
   if (m.includes('rate_limited')) return 'Too many attempts. Wait a few minutes and try again.'
   if (m.includes('cwd_not_allowed')) return 'That folder is outside the allowed roots.'

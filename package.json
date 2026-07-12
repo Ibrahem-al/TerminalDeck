@@ -1,6 +1,6 @@
 {
   "name": "quarterdeck",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Quarterdeck — a chat-style terminal workspace for commanding parallel AI agents",
   "main": "./out/main/index.js",
   "private": true,
@@ -13,7 +13,8 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "build:remote": "vite build -c vite.remote.config.ts",
-    "dist": "electron-vite build && npm run build:remote && electron-builder --win"
+    "dist": "electron-vite build && npm run build:remote && electron-builder --win",
+    "release": "electron-vite build && npm run build:remote && electron-builder --win --publish always"
   },
   "dependencies": {
     "@fontsource-variable/schibsted-grotesk": "^5.2.8",
@@ -24,6 +25,7 @@
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.17.0",
     "monaco-editor": "^0.55.1",
     "node-pty": "^1.1.0",

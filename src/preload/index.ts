@@ -21,7 +21,8 @@ import {
   type RemoteServerStatus,
   type ShellInfo,
   type TailscaleStatus,
-  type TaskCompletePayload
+  type TaskCompletePayload,
+  type UpdateStatusPayload
 } from '@shared/types'
 
 const api = {
@@ -51,11 +52,52 @@ const api = {
     minimize: (): void => ipcRenderer.send(IPC.WindowMinimize),
     maximize: (): void => ipcRenderer.send(IPC.WindowMaximize),
     close: (): void => ipcRenderer.send(IPC.WindowClose),
+    /** Open another independent app window. */
+    newWindow: (): void => ipcRenderer.send(IPC.WindowNew),
+    /** True for the launch window — only it restores/persists the saved session. */
+    isPrimary:
+      process.argv.find((a) => a.startsWith('--qd-window-role='))?.split('=')[1] !== 'secondary',
+    /** Confirm a pending close (after the user OKs the "close?" prompt). */
+    confirmClose: (): void => ipcRenderer.send(IPC.WindowConfirmClose),
+    /** Main asks the renderer to confirm before the window actually closes. */
+    onCloseRequest: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on(IPC.WindowCloseRequest, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.WindowCloseRequest, listener)
+      }
+    },
+    /** Main promotes this window to session owner (the primary window closed). */
+    onBecomePrimary: (callback: () => void): (() => void) => {
+      const listener = (): void => callback()
+      ipcRenderer.on(IPC.WindowSetPrimary, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.WindowSetPrimary, listener)
+      }
+    },
     onMaximizedChange: (callback: (maximized: boolean) => void): (() => void) => {
       const listener = (_event: unknown, maximized: boolean): void => callback(maximized)
       ipcRenderer.on(IPC.WindowMaximized, listener)
       return () => {
         ipcRenderer.removeListener(IPC.WindowMaximized, listener)
+      }
+    }
+  },
+
+  updater: {
+    /** Current updater state without triggering a check (catch-up for new windows). */
+    current: (): Promise<UpdateStatusPayload> => ipcRenderer.invoke(IPC.UpdateGetCurrent),
+    /** Trigger an update check; resolves with the latest known status. */
+    check: (): Promise<UpdateStatusPayload> => ipcRenderer.invoke(IPC.UpdateCheck),
+    /** Download the available update (progress arrives via onStatus). */
+    download: (): Promise<void> => ipcRenderer.invoke(IPC.UpdateDownload),
+    /** Quit and install a downloaded update. */
+    install: (): void => ipcRenderer.send(IPC.UpdateInstall),
+    onStatus: (callback: (status: UpdateStatusPayload) => void): (() => void) => {
+      const listener = (_e: unknown, status: UpdateStatusPayload): void => callback(status)
+      ipcRenderer.on(IPC.UpdateStatus, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.UpdateStatus, listener)
       }
     }
   },
@@ -205,6 +247,11 @@ const api = {
     tailscaleUp: (): Promise<TailscaleStatus> => ipcRenderer.invoke(IPC.RemoteTailscaleUp),
     tailscaleServe: (enable: boolean): Promise<TailscaleStatus> =>
       ipcRenderer.invoke(IPC.RemoteTailscaleServe, enable),
+    tailscaleFunnel: (enable: boolean): Promise<TailscaleStatus> =>
+      ipcRenderer.invoke(IPC.RemoteTailscaleFunnel, enable),
+    /** Set (or clear, with null) the access passcode; returns the refreshed config. */
+    setPasscode: (passcode: string | null): Promise<RemoteConfig> =>
+      ipcRenderer.invoke(IPC.RemoteSetPasscode, passcode),
     ports: (): Promise<ListeningPort[]> => ipcRenderer.invoke(IPC.RemotePorts),
     onStatusChanged: (callback: (status: RemoteServerStatus) => void): (() => void) => {
       const listener = (_e: unknown, status: RemoteServerStatus): void => callback(status)

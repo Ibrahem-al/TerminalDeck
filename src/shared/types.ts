@@ -11,6 +11,23 @@ export const IPC = {
   WindowMaximize: 'window:maximize',
   WindowClose: 'window:close',
   WindowMaximized: 'window:maximized',
+  /** Open another independent app window. */
+  WindowNew: 'window:new',
+  /** Main → renderer: the window is trying to close; the renderer confirms first. */
+  WindowCloseRequest: 'window:close-request',
+  /** Renderer → main: the user confirmed the close; actually close now. */
+  WindowConfirmClose: 'window:confirm-close',
+  /** Main → renderer: this window is now the session owner (the primary closed). */
+  WindowSetPrimary: 'window:set-primary',
+
+  // In-app auto-update (electron-updater, packaged builds only)
+  UpdateCheck: 'update:check',
+  UpdateDownload: 'update:download',
+  UpdateInstall: 'update:install',
+  /** Renderer → main: fetch the current updater state (catch-up for new windows). */
+  UpdateGetCurrent: 'update:get-current',
+  /** Main → renderer: current updater state (checking / available / progress / …). */
+  UpdateStatus: 'update:status',
 
   /** Open an http(s) URL in the OS default app (terminal Ctrl+click, etc.). */
   ShellOpenExternal: 'shell:open-external',
@@ -85,6 +102,8 @@ export const IPC = {
   RemoteTailscale: 'remote:tailscale',
   RemoteTailscaleUp: 'remote:tailscale-up',
   RemoteTailscaleServe: 'remote:tailscale-serve',
+  RemoteTailscaleFunnel: 'remote:tailscale-funnel',
+  RemoteSetPasscode: 'remote:set-passcode',
   RemotePorts: 'remote:ports',
 
   // Notifications (phone push + desktop)
@@ -187,7 +206,25 @@ export interface AppSettings {
     theme: string
     /** Starting directory for new terminals and the folder picker ('' = home). */
     defaultDirectory: string
+    /**
+     * Project a new tab is bound to when the new-tab dialog is confirmed without
+     * an explicit pick (the ★ "default project" in the switcher). Null = new tabs
+     * are plain scratch tabs. Dangling ids (project deleted) are treated as null.
+     */
+    defaultProjectId: string | null
     sidebarSide: 'left' | 'right'
+    /**
+     * Keep the PC awake (no idle system sleep) while any embedded Claude chat
+     * pane is actively working, so agents aren't paused when you step away. The
+     * display may still sleep; releases automatically once every chat is idle.
+     */
+    keepAwakeWhileBusy: boolean
+    /**
+     * Ask for confirmation before a window closes while it still has live
+     * terminals/agents or unsaved editor files, so a stray Alt+F4 or click on ✕
+     * doesn't silently kill running work. Empty windows close without a prompt.
+     */
+    confirmOnClose: boolean
   }
   editor: {
     fontSize: number
@@ -241,7 +278,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     startup: 'restore',
     theme: 'deepwater',
     defaultDirectory: '',
-    sidebarSide: 'left'
+    defaultProjectId: null,
+    sidebarSide: 'left',
+    keepAwakeWhileBusy: false,
+    confirmOnClose: true
   },
   editor: { fontSize: 13, tabSize: 2, wordWrap: false, minimap: true, formatOnSave: false },
   terminal: {
@@ -335,6 +375,12 @@ export interface RemoteConfig {
    * still sleep. Defaults on — turn off to let the PC sleep normally.
    */
   keepAwake: boolean
+  /**
+   * Whether an access passcode (second pairing factor) is set. Read-only mirror
+   * for the wizard — the passcode itself is never sent to the renderer, and
+   * setConfig ignores this field (change it via the dedicated set-passcode IPC).
+   */
+  hasPasscode: boolean
 }
 
 /** Live status of the embedded Agent, surfaced to the renderer wizard. */
@@ -371,6 +417,8 @@ export interface PairQrPayload {
 export interface PairRequest {
   code: string
   deviceName?: string
+  /** Access passcode — required only when the desktop has one set (2nd factor). */
+  passcode?: string
 }
 export interface PairResponse {
   token: string
@@ -387,8 +435,10 @@ export interface TailscaleStatus {
   fqdn: string | null
   ipv4: string | null
   magicDnsEnabled: boolean
-  /** True when our `tailscale serve` for the Agent port is active. */
+  /** True when our `tailscale serve` for the Agent port is active (tailnet-only HTTPS). */
   serving: boolean
+  /** True when `tailscale funnel` exposes the Agent port on the public internet. */
+  funnel: boolean
   error?: string
 }
 
@@ -463,6 +513,34 @@ export interface TaskCompletePayload {
   durationMs: number
   /** Optional extra context (cwd, command…). */
   detail?: string
+}
+
+/* ── In-app auto-update (electron-updater) ────────────────────────── */
+
+/**
+ * Where the updater is in its lifecycle. `dev` = running unpackaged (updates
+ * disabled); `error` carries a message; the rest map to electron-updater events.
+ */
+export type UpdateState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+  | 'dev'
+
+export interface UpdateStatusPayload {
+  state: UpdateState
+  /** Version offered by the feed (available/downloading/downloaded states). */
+  version?: string
+  /** Release notes (plain text/markdown), when the feed provides them. */
+  notes?: string
+  /** 0–100 download progress, present only while downloading. */
+  percent?: number
+  /** Human-readable error, present only in the `error` state. */
+  error?: string
 }
 
 /** A browser Push API subscription (from PushSubscription.toJSON()). */

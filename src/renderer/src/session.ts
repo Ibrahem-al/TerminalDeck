@@ -12,6 +12,7 @@ import { useWorkspace, type PaneMeta, type SpawnDefaults, type WorkspaceTab } fr
 import { useExplorer } from './store/explorer'
 import { useProjects } from './store/projects'
 import { useEditorStore } from './store/editor'
+import { usePaneCwd } from './store/paneCwd'
 import { paneIdsIn } from './components/workspace/layout'
 
 interface SessionState {
@@ -26,12 +27,41 @@ interface SessionState {
   editorActive: Record<string, string | null>
 }
 
+/**
+ * Convert a shell-reported working directory to a native Windows path we can
+ * safely respawn in, or return null when it can't be trusted. PowerShell emits
+ * native `C:\…`; OSC 7 yields forward slashes (`C:/…`); Git Bash emits MSYS
+ * paths — drive mounts (`/c/Users/…`) map cleanly to `C:\Users\…`, but virtual
+ * mounts (`/tmp`, `/usr`, `/home`, `/`) point into the Git install dir and have
+ * no string-only Windows equivalent. For those we return null so the caller
+ * keeps the pane's spawn dir rather than persisting a bogus drive-relative path
+ * (`\tmp`) that would otherwise restore the terminal to the drive root.
+ */
+function toNativeCwd(cwd: string): string | null {
+  if (window.quarterdeck.platform !== 'win32') return cwd
+  // Already native: a drive path (`C:\…` / `C:/…`) or UNC (`\\server\…` / `//server/…`).
+  if (/^[a-zA-Z]:[\\/]/.test(cwd) || /^[\\/]{2}[^\\/]/.test(cwd)) return cwd.replace(/\//g, '\\')
+  // MSYS drive mount: `/c` or `/c/rest` → `C:\` or `C:\rest`.
+  const drive = /^\/([a-zA-Z])(\/.*)?$/.exec(cwd)
+  if (drive) return `${drive[1].toUpperCase()}:${(drive[2] ?? '/').replace(/\//g, '\\')}`
+  // MSYS virtual mount, or anything else we can't confidently map — don't trust it.
+  return null
+}
+
 function serialize(): SessionState {
   const ws = useWorkspace.getState()
+  const liveCwd = usePaneCwd.getState().byPane
   const panes: Record<string, Omit<PaneMeta, 'env'>> = {}
   for (const [id, pane] of Object.entries(ws.panes)) {
     const { env: _env, ...rest } = pane
-    panes[id] = rest
+    // Persist the pane's *last-known* working directory (updated as the user
+    // navigates, reported by the shell integration) instead of its original
+    // spawn dir, so a restored/crash-recovered terminal reopens where it was.
+    // Panes with no live cwd (agents, cmd.exe, editors) — or a live cwd we can't
+    // map to a native path (an MSYS virtual dir) — keep their spawn dir.
+    const live = liveCwd[id]
+    const native = live !== undefined ? toNativeCwd(live) : null
+    panes[id] = native !== null ? { ...rest, cwd: native } : rest
   }
   const { env: _denv, ...spawnDefaults } = ws.spawnDefaults
 
@@ -123,10 +153,23 @@ function scheduleSave(): void {
   }, 800)
 }
 
-/** Call once after boot (and after any restore) to keep the session saved. */
+let autoSaveStarted = false
+
+/** Begin keeping the saved session in sync with this window's workspace.
+ *  Idempotent. Only the session-owning window should call this — at boot the
+ *  primary window does, and if the primary later closes, main promotes a
+ *  survivor which calls this too. Extra (non-owning) windows never call it, so
+ *  they can't overwrite the shared session. */
 export function initSessionAutoSave(): void {
+  if (autoSaveStarted) return
+  autoSaveStarted = true
   useWorkspace.subscribe(scheduleSave)
   useEditorStore.subscribe(scheduleSave)
+  // Persist working-directory changes too, so a restored terminal lands in the
+  // dir it was last in even after an unclean shutdown. The equality guard in
+  // usePaneCwd means this fires only on an actual `cd` (not every prompt), and
+  // scheduleSave is debounced — so churn stays minimal.
+  usePaneCwd.subscribe(scheduleSave)
   useExplorer.subscribe((s, prev) => {
     if (s.root !== prev.root) scheduleSave()
   })
@@ -137,4 +180,11 @@ export function initSessionAutoSave(): void {
     clearTimeout(saveTimer)
     window.quarterdeck.session.save(serialize())
   })
+}
+
+/** Persist the current workspace immediately (used when a window is promoted to
+ *  session owner, so its state is captured even if the app quits right after). */
+export function persistSessionNow(): void {
+  clearTimeout(saveTimer)
+  window.quarterdeck.session.save(serialize())
 }

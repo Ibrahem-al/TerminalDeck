@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { Project } from '@shared/types'
 import { useWorkspace } from './workspace'
 import { useExplorer } from './explorer'
-import { TEMPLATES, paneIdsIn } from '../components/workspace/layout'
+import { TEMPLATES, paneIdsIn, type Template } from '../components/workspace/layout'
 import { sendToPane } from '../components/terminal/inputBus'
 import { toast } from './toasts'
 
@@ -62,7 +62,11 @@ interface ProjectsStore {
   load: () => Promise<void>
   saveProject: (project: Project) => Promise<void>
   deleteProject: (id: string) => Promise<void>
-  openProject: (id: string) => Promise<void>
+  /**
+   * Opens a project in a fresh tab. `templateOverride` lets the new-tab dialog
+   * pick a layout other than the project's own default template.
+   */
+  openProject: (id: string, templateOverride?: Template) => Promise<void>
   /**
    * Re-applies the right project context for a tab when it becomes active, so
    * each tab behaves like "its" project — the top-bar indicator, new-pane spawn
@@ -116,17 +120,25 @@ export const useProjects = create<ProjectsStore>((set, get) => ({
 
   deleteProject: async (id) => {
     await window.quarterdeck.projects.delete(id)
+    // Clear the pinned default here (not at each call site) so every delete path
+    // — the switcher and the settings panel — leaves no dangling default id.
+    // Deferred import keeps the projects⇄settings module graph acyclic at eval.
+    const { useSettings } = await import('./settings')
+    if (useSettings.getState().settings.general.defaultProjectId === id) {
+      useSettings.getState().update('general', { defaultProjectId: null })
+    }
     set((s) => ({
       projects: s.projects.filter((p) => p.id !== id),
       activeProjectId: s.activeProjectId === id ? null : s.activeProjectId
     }))
   },
 
-  openProject: async (id) => {
+  openProject: async (id, templateOverride) => {
     const project = get().projects.find((p) => p.id === id)
     if (!project) return
 
-    const template = TEMPLATES.find((t) => t.id === project.defaultTemplate) ?? TEMPLATES[0]
+    const template =
+      templateOverride ?? TEMPLATES.find((t) => t.id === project.defaultTemplate) ?? TEMPLATES[0]
 
     // ambient context first, so the new tab's panes inherit it
     await applyProjectContext(project)

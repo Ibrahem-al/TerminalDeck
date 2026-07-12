@@ -13,11 +13,24 @@ async function errorOf(res: Response): Promise<string> {
   }
 }
 
-export async function pair(code: string, deviceName: string): Promise<PairResponse> {
+export interface PairInfo {
+  /** True when the desktop has an access passcode set (a second pairing factor). */
+  passcodeRequired: boolean
+  serverName: string
+}
+
+/** Public, pre-pair probe so the phone can collect a passcode before submitting. */
+export async function getPairInfo(): Promise<PairInfo> {
+  const res = await fetch('/api/pair-info')
+  if (!res.ok) throw new Error(await errorOf(res))
+  return (await res.json()) as PairInfo
+}
+
+export async function pair(code: string, deviceName: string, passcode?: string): Promise<PairResponse> {
   const res = await fetch('/api/pair', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, deviceName })
+    body: JSON.stringify({ code, deviceName, passcode })
   })
   if (!res.ok) throw new Error(await errorOf(res))
   return (await res.json()) as PairResponse

@@ -23,6 +23,15 @@ async function run(cli: string, args: string[], timeout = 10_000): Promise<strin
   return stdout
 }
 
+/**
+ * Whether a `serve`/`funnel status` dump maps our port. Matched at a `:port`
+ * boundary (the local target renders as `http://127.0.0.1:<port>`) rather than a
+ * bare substring, so e.g. 8787 can't false-match inside 18787 or a DNS name.
+ */
+function statusHasPort(output: string, port: number): boolean {
+  return new RegExp(`:${port}(?!\\d)`).test(output)
+}
+
 interface RawStatus {
   BackendState?: string
   Self?: { DNSName?: string; TailscaleIPs?: string[] }
@@ -40,6 +49,7 @@ export async function tailscaleStatus(port: number): Promise<TailscaleStatus> {
       ipv4: null,
       magicDnsEnabled: false,
       serving: false,
+      funnel: false,
       error: 'Tailscale is not installed'
     }
   }
@@ -53,9 +63,20 @@ export async function tailscaleStatus(port: number): Promise<TailscaleStatus> {
 
     let serving = false
     try {
-      serving = (await run(cli, ['serve', 'status'])).includes(String(port))
+      serving = statusHasPort(await run(cli, ['serve', 'status']), port)
     } catch {
       /* `serve status` exits non-zero when nothing is served */
+    }
+
+    let funnel = false
+    try {
+      // `funnel status` lists only the funnel (public) subset. Note `serve
+      // status` is a SUPERSET — it also reports funnelled ports — so `serving`
+      // can be true whenever `funnel` is; callers deriving "tailnet only" should
+      // treat it as `serving && !funnel`.
+      funnel = statusHasPort(await run(cli, ['funnel', 'status']), port)
+    } catch {
+      /* funnel unconfigured or unsupported by this Tailscale version */
     }
 
     return {
@@ -65,7 +86,8 @@ export async function tailscaleStatus(port: number): Promise<TailscaleStatus> {
       fqdn,
       ipv4,
       magicDnsEnabled: raw.CurrentTailnet?.MagicDNSEnabled === true,
-      serving
+      serving,
+      funnel
     }
   } catch (e) {
     return {
@@ -76,6 +98,7 @@ export async function tailscaleStatus(port: number): Promise<TailscaleStatus> {
       ipv4: null,
       magicDnsEnabled: false,
       serving: false,
+      funnel: false,
       error: e instanceof Error ? e.message : 'tailscale status failed'
     }
   }
@@ -127,10 +150,61 @@ export async function tailscaleServe(port: number, enable: boolean): Promise<voi
 
   // Confirm it took effect; if the port isn't actually served, surface the report.
   const status = await run(cli, ['serve', 'status']).catch(() => '')
-  if (!status.includes(String(port))) {
+  if (!statusHasPort(status, port)) {
     throw new Error(
       reported ||
         'Tailscale could not publish. Make sure Serve and HTTPS Certificates are enabled for your tailnet.'
+    )
+  }
+}
+
+/** Exposes (or tears down) the Agent on the PUBLIC internet at https://<fqdn> via
+ *  Tailscale Funnel. Unlike Serve (tailnet-only), the phone needs no Tailscale app.
+ *  Throws an Error whose message is whatever Tailscale reported — which, when the
+ *  tailnet's Funnel or HTTPS-certificate features aren't enabled yet, includes the
+ *  exact admin URL to enable them. The wizard surfaces this to the user. */
+export async function tailscaleFunnel(port: number, enable: boolean): Promise<void> {
+  const cli = findCli()
+  if (!cli) throw new Error('Tailscale is not installed')
+
+  if (!enable) {
+    // `funnel <port> off` turns off just this mapping; older CLIs need `serve reset`.
+    await run(cli, ['funnel', String(port), 'off'], 15_000).catch(async () => {
+      await run(cli, ['serve', 'reset'], 15_000).catch(() => undefined)
+    })
+    return
+  }
+
+  // Like `serve`, the first `funnel` can fail (or stall then fail) if Funnel or
+  // HTTPS certificates aren't enabled for the tailnet. Capture whatever it reports.
+  let reported = ''
+  try {
+    const r = await exec(cli, ['funnel', '--bg', String(port)], {
+      windowsHide: true,
+      timeout: 25_000,
+      maxBuffer: 8 * 1024 * 1024
+    })
+    reported = `${r.stdout}\n${r.stderr}`.trim()
+  } catch (e) {
+    const err = e as { stdout?: string; stderr?: string; killed?: boolean; message?: string }
+    const captured = `${err.stderr ?? ''}\n${err.stdout ?? ''}`.trim()
+    if (captured) {
+      reported = captured // e.g. "Funnel is not enabled on your tailnet. To enable, visit: …"
+    } else if (err.killed) {
+      throw new Error(
+        "Publishing to the internet timed out — Tailscale couldn't set up Funnel/HTTPS. Enable Funnel and HTTPS Certificates for your tailnet (admin console), then try again."
+      )
+    } else {
+      throw new Error(err.message ?? 'tailscale funnel failed')
+    }
+  }
+
+  // Confirm it took effect; if the port isn't actually funnelled, surface the report.
+  const status = await run(cli, ['funnel', 'status']).catch(() => '')
+  if (!statusHasPort(status, port)) {
+    throw new Error(
+      reported ||
+        'Tailscale could not publish over Funnel. Make sure Funnel and HTTPS Certificates are enabled for your tailnet.'
     )
   }
 }

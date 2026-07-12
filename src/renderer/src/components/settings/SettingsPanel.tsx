@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import {
+  Download,
   FolderGit2,
   Info,
   Keyboard,
   Palette,
   PencilLine,
+  RefreshCw,
   Settings,
   Settings2,
   SquareCode,
@@ -16,11 +18,20 @@ import { APP_NAME, INFINITE_SCROLLBACK, type Project, type ShellInfo } from '@sh
 import { useSettings } from '../../store/settings'
 import { useProjects, sortedProjects } from '../../store/projects'
 import { useTheme } from '../../store/theme'
+import { useUpdater } from '../../store/updater'
 import { THEMES } from '../../styles/themes'
 import { TEMPLATES } from '../workspace/layout'
 import { ConfirmDialog } from '../common/ConfirmDialog'
 
-type SectionId = 'general' | 'editor' | 'terminal' | 'shortcuts' | 'themes' | 'projects' | 'about'
+type SectionId =
+  | 'general'
+  | 'editor'
+  | 'terminal'
+  | 'shortcuts'
+  | 'themes'
+  | 'projects'
+  | 'updates'
+  | 'about'
 
 const SECTIONS: { id: SectionId; label: string; icon: typeof Settings2 }[] = [
   { id: 'general', label: 'General', icon: Settings2 },
@@ -29,11 +40,13 @@ const SECTIONS: { id: SectionId; label: string; icon: typeof Settings2 }[] = [
   { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
   { id: 'themes', label: 'Themes', icon: Palette },
   { id: 'projects', label: 'Projects', icon: FolderGit2 },
+  { id: 'updates', label: 'Updates', icon: RefreshCw },
   { id: 'about', label: 'About', icon: Info }
 ]
 
 const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: 'Ctrl+T', action: 'New workspace tab (template picker)' },
+  { keys: 'Ctrl+Shift+M', action: 'Open a new app window' },
   { keys: 'Ctrl+W', action: 'Close current workspace tab' },
   { keys: 'Ctrl+1–9', action: 'Switch workspace tab by index' },
   { keys: 'Ctrl+D', action: 'Split active pane right' },
@@ -149,6 +162,118 @@ function ThemesGrid(): React.JSX.Element {
       </div>
       <p className="mt-3 font-ui text-[11px] text-ink-3">
         Hover to preview the whole app live · click to apply
+      </p>
+    </div>
+  )
+}
+
+function UpdatesSection(): React.JSX.Element {
+  const status = useUpdater((s) => s.status)
+  const version = useUpdater((s) => s.version)
+  const check = useUpdater((s) => s.check)
+  const download = useUpdater((s) => s.download)
+  const install = useUpdater((s) => s.install)
+
+  const busy = status.state === 'checking' || status.state === 'downloading'
+  const btn =
+    'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-ui text-[12px] font-semibold transition-opacity duration-100 hover:opacity-90 disabled:opacity-50'
+
+  return (
+    <div className="space-y-4 py-1">
+      <div className="flex items-center gap-2.5">
+        <div className="h-3 w-3 rotate-45 bg-accent" aria-hidden="true" />
+        <span className="font-ui text-[13px] font-semibold text-ink">{APP_NAME}</span>
+        <span className="font-mono text-[11px] text-ink-3">v{version || '…'}</span>
+      </div>
+
+      <div className="rounded-lg border border-edge-2 bg-term/40 p-3.5">
+        {status.state === 'dev' && (
+          <p className="font-ui text-[12.5px] text-ink-2">
+            This is a development build — auto-update is disabled. Packaged builds update from GitHub
+            Releases.
+          </p>
+        )}
+
+        {status.state === 'checking' && (
+          <p className="flex items-center gap-2 font-ui text-[12.5px] text-ink-2">
+            <RefreshCw size={13} className="animate-spin text-accent" aria-hidden="true" />
+            Checking for updates…
+          </p>
+        )}
+
+        {(status.state === 'idle' || status.state === 'not-available') && (
+          <div className="flex items-center justify-between gap-4">
+            <p className="font-ui text-[12.5px] text-ink-2">
+              {status.state === 'not-available'
+                ? "You're on the latest version."
+                : 'Check whether a newer version is available.'}
+            </p>
+            <button onClick={check} className={`${btn} bg-accent text-ink-inverse`}>
+              <RefreshCw size={13} aria-hidden="true" />
+              Check for updates
+            </button>
+          </div>
+        )}
+
+        {status.state === 'available' && (
+          <div className="space-y-2.5">
+            <p className="font-ui text-[12.5px] text-ink">
+              Version <span className="font-semibold text-accent">{status.version}</span> is available.
+            </p>
+            {status.notes && (
+              <pre className="max-h-32 overflow-y-auto rounded border border-edge-2 bg-base p-2 font-ui text-[11.5px] whitespace-pre-wrap text-ink-3">
+                {status.notes}
+              </pre>
+            )}
+            <button onClick={download} className={`${btn} bg-accent text-ink-inverse`}>
+              <Download size={13} aria-hidden="true" />
+              Download update
+            </button>
+          </div>
+        )}
+
+        {status.state === 'downloading' && (
+          <div className="space-y-2">
+            <p className="font-ui text-[12.5px] text-ink-2">
+              Downloading update… {status.percent ?? 0}%
+            </p>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-edge">
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-200"
+                style={{ width: `${status.percent ?? 0}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {status.state === 'downloaded' && (
+          <div className="flex items-center justify-between gap-4">
+            <p className="font-ui text-[12.5px] text-ink">
+              Version <span className="font-semibold text-accent">{status.version}</span> is ready to
+              install.
+            </p>
+            <button onClick={install} className={`${btn} bg-accent text-ink-inverse`}>
+              Restart &amp; install
+            </button>
+          </div>
+        )}
+
+        {status.state === 'error' && (
+          <div className="flex items-center justify-between gap-4">
+            <p className="min-w-0 font-ui text-[12.5px] text-danger">
+              Couldn’t check for updates: {status.error}
+            </p>
+            <button onClick={check} disabled={busy} className={`${btn} bg-accent text-ink-inverse`}>
+              <RefreshCw size={13} aria-hidden="true" />
+              Try again
+            </button>
+          </div>
+        )}
+      </div>
+
+      <p className="font-ui text-[11px] text-ink-3">
+        Updates install a signed-in-place NSIS package and keep your settings, projects, and paired
+        phones. TerminalDeck checks automatically on launch.
       </p>
     </div>
   )
@@ -309,6 +434,26 @@ export function SettingsPanel({ onEditProject, onNewProject }: Props): React.JSX
                     <option value="left">Left</option>
                     <option value="right">Right</option>
                   </select>
+                </Row>
+                <Row
+                  label="Keep computer awake while AI is working"
+                  hint="Prevents your PC from sleeping while any Claude chat pane is working, so agents keep running when you step away. The display can still sleep; it releases automatically once every chat is idle."
+                >
+                  <Toggle
+                    checked={settings.general.keepAwakeWhileBusy}
+                    label="Keep computer awake while AI is working"
+                    onChange={(v) => update('general', { keepAwakeWhileBusy: v })}
+                  />
+                </Row>
+                <Row
+                  label="Confirm before closing"
+                  hint="Warn before a window closes while it still has live terminals, agents, or unsaved files. Empty windows always close without a prompt."
+                >
+                  <Toggle
+                    checked={settings.general.confirmOnClose}
+                    label="Confirm before closing"
+                    onChange={(v) => update('general', { confirmOnClose: v })}
+                  />
                 </Row>
               </>
             )}
@@ -550,6 +695,8 @@ export function SettingsPanel({ onEditProject, onNewProject }: Props): React.JSX
                 </button>
               </div>
             )}
+
+            {section === 'updates' && <UpdatesSection />}
 
             {section === 'about' && (
               <div className="space-y-2 py-2">

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { useWorkspace } from '../../store/workspace'
+import { TabContextMenu } from './TabContextMenu'
 
 interface Props {
   onNewTab: () => void
@@ -18,8 +19,16 @@ export function WorkspaceTabs({ onNewTab }: Props): React.JSX.Element {
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  const [ctxMenu, setCtxMenu] = useState<{ tabId: string; x: number; y: number } | null>(null)
   const dragFrom = useRef<number | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const beginRename = (tabId: string): void => {
+    const tab = tabs.find((t) => t.id === tabId)
+    if (!tab) return
+    setDraft(tab.name)
+    setEditingId(tab.id)
+  }
 
   useEffect(() => {
     if (editingId) {
@@ -42,10 +51,16 @@ export function WorkspaceTabs({ onNewTab }: Props): React.JSX.Element {
               if (dragFrom.current !== null) reorderTabs(dragFrom.current, i)
               dragFrom.current = null
             }}
+            title="Right-click for project & color options"
             className={`group flex h-7 shrink-0 cursor-default items-center gap-1.5 rounded-md pr-1 pl-2.5 transition-colors duration-100 ${
               active ? 'bg-overlay' : 'hover:bg-raised'
             }`}
             onClick={() => setActiveTab(tab.id)}
+            onContextMenu={(e) => {
+              if (editingId === tab.id) return
+              e.preventDefault()
+              setCtxMenu({ tabId: tab.id, x: e.clientX, y: e.clientY })
+            }}
           >
             <button
               aria-label="Change tab color"
@@ -77,10 +92,7 @@ export function WorkspaceTabs({ onNewTab }: Props): React.JSX.Element {
               />
             ) : (
               <span
-                onDoubleClick={() => {
-                  setDraft(tab.name)
-                  setEditingId(tab.id)
-                }}
+                onDoubleClick={() => beginRename(tab.id)}
                 className={`font-ui text-[11.5px] font-medium select-none ${
                   active ? 'text-ink' : 'text-ink-3'
                 }`}
@@ -111,6 +123,15 @@ export function WorkspaceTabs({ onNewTab }: Props): React.JSX.Element {
       >
         <Plus size={14} />
       </button>
+
+      {ctxMenu && (
+        <TabContextMenu
+          tabId={ctxMenu.tabId}
+          anchor={{ x: ctxMenu.x, y: ctxMenu.y }}
+          onClose={() => setCtxMenu(null)}
+          onRename={() => beginRename(ctxMenu.tabId)}
+        />
+      )}
     </div>
   )
 }

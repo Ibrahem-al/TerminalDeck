@@ -1,6 +1,8 @@
 import { spawn, type IPty } from 'node-pty'
 import { randomUUID } from 'crypto'
 import { homedir } from 'os'
+import { statSync } from 'fs'
+import { dirname, join } from 'path'
 import type { PtySession, PtySpawnOptions, ShellKind } from '@shared/types'
 import { buildShellLaunch } from './shellIntegration'
 import type { RemoteSubscriber, SubscribeResult } from '../remote/backend'
@@ -8,6 +10,48 @@ import type { RemoteSubscriber, SubscribeResult } from '../remote/backend'
 interface SessionCallbacks {
   onData: (data: string) => void
   onExit: (exitCode: number) => void
+}
+
+/**
+ * Build the child environment, giving CLIs a working way to open the browser for
+ * OAuth/login (Claude Code's `claude`/`/login`, `gh`, `vercel`, MCP auth, …).
+ *
+ * Inside an embedded ConPTY the CLI's default opener (`cmd /c start …`) can
+ * silently no-op, so authentication that "auto-opens the browser" just hangs.
+ * Most tools (and the `open` npm package they use) honor the `BROWSER` env var,
+ * so we default it to explorer.exe, which reliably hands the URL to the OS
+ * default browser and works whether the tool spawns it directly or via a shell.
+ * Only a default — a BROWSER already set by the user or project env wins.
+ */
+function buildPtyEnv(optionsEnv?: Record<string, string>): Record<string, string> {
+  const env = { ...process.env, ...optionsEnv } as Record<string, string>
+  if (process.platform === 'win32' && !env.BROWSER) {
+    env.BROWSER = join(process.env.SystemRoot ?? 'C:\\Windows', 'explorer.exe')
+  }
+  return env
+}
+
+/**
+ * Resolve a usable spawn directory. A restored terminal may point at a dir that
+ * has since been deleted or lives on an unmounted drive; walk up to the nearest
+ * existing ancestor (falling back to home) so node-pty never throws on spawn.
+ */
+function resolveSpawnDir(requested: string | undefined): string {
+  const home = homedir()
+  let dir = requested ?? home
+  const seen = new Set<string>()
+  while (dir && !seen.has(dir)) {
+    try {
+      if (statSync(dir).isDirectory()) return dir
+    } catch {
+      // missing / inaccessible — fall through and try the parent
+    }
+    seen.add(dir)
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return home
 }
 
 /** Recent output kept per session so a phone attaching mid-stream gets replay. */
@@ -30,7 +74,7 @@ export class PtyManager {
 
   create(options: PtySpawnOptions, callbacks: SessionCallbacks): PtySession {
     const launch = buildShellLaunch(options.shell)
-    const cwd = options.cwd ?? homedir()
+    const cwd = resolveSpawnDir(options.cwd)
     const sessionId = randomUUID()
 
     const pty = spawn(launch.path, launch.args, {
@@ -38,7 +82,7 @@ export class PtyManager {
       cols: Math.max(2, options.cols),
       rows: Math.max(2, options.rows),
       cwd,
-      env: { ...process.env, ...options.env } as Record<string, string>
+      env: buildPtyEnv(options.env)
     })
 
     const session: Session = {

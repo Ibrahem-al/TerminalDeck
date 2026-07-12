@@ -22,6 +22,11 @@ function Divider({
     const el = e.currentTarget as HTMLElement
     el.setPointerCapture(e.pointerId)
 
+    // Keep the resize cursor and suppress text selection for the whole drag, so
+    // sweeping across a terminal pane doesn't flip the cursor or select its text.
+    document.body.style.cursor = isRow ? 'col-resize' : 'row-resize'
+    document.body.style.userSelect = 'none'
+
     const onMove = (ev: PointerEvent): void => {
       const container = containerRef.current
       if (!container) return
@@ -31,12 +36,20 @@ function Divider({
         : ((ev.clientY - rect.top) / rect.height) * 100
       setSplitRatio(tabId, divider.splitId, (pct - divider.start) / divider.size)
     }
-    const onUp = (): void => {
+    // Clear the overrides back to their unset defaults on ANY drag end —
+    // pointerup or a pointercancel (touch/pen/OS interruption). Resetting to ''
+    // (not a captured snapshot) means a missed cleanup can't get re-frozen by the
+    // next drag, so the body can never end up stuck with selection disabled.
+    const finish = (): void => {
       el.removeEventListener('pointermove', onMove)
-      el.removeEventListener('pointerup', onUp)
+      el.removeEventListener('pointerup', finish)
+      el.removeEventListener('pointercancel', finish)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
     }
     el.addEventListener('pointermove', onMove)
-    el.addEventListener('pointerup', onUp)
+    el.addEventListener('pointerup', finish)
+    el.addEventListener('pointercancel', finish)
   }
 
   const onKeyDown = (e: React.KeyboardEvent): void => {
@@ -57,26 +70,23 @@ function Divider({
       onPointerDown={onPointerDown}
       onDoubleClick={() => setSplitRatio(tabId, divider.splitId, 0.5)}
       onKeyDown={onKeyDown}
-      style={
-        isRow
-          ? { left: `${divider.x}%`, top: `${divider.y}%`, height: `${divider.length}%` }
-          : { left: `${divider.x}%`, top: `${divider.y}%`, width: `${divider.length}%` }
-      }
-      className={`absolute z-10 flex items-center justify-center outline-none ${
-        isRow ? 'w-0 cursor-col-resize' : 'h-0 cursor-row-resize'
+      // A wide, invisible grab zone (14px) centered on the divider line makes the
+      // edge easy to catch; the visible hairline stays thin until hover/drag.
+      style={{
+        left: `${divider.x}%`,
+        top: `${divider.y}%`,
+        touchAction: 'none',
+        ...(isRow ? { height: `${divider.length}%` } : { width: `${divider.length}%` })
+      }}
+      className={`group absolute z-10 flex items-center justify-center outline-none ${
+        isRow ? 'w-[14px] -translate-x-1/2 cursor-col-resize' : 'h-[14px] -translate-y-1/2 cursor-row-resize'
       }`}
     >
       <div
-        className={`${
-          isRow ? 'h-full w-[7px] -translate-x-1/2' : 'h-[7px] w-full -translate-y-1/2'
-        } group flex items-center justify-center`}
-      >
-        <div
-          className={`${
-            isRow ? 'h-full w-px' : 'h-px w-full'
-          } bg-transparent transition-colors duration-100 group-hover:bg-accent/60 group-active:bg-accent`}
-        />
-      </div>
+        className={`rounded-full bg-transparent transition-all duration-100 group-hover:bg-accent/70 group-focus-visible:bg-accent/70 group-active:bg-accent ${
+          isRow ? 'h-full w-px group-hover:w-[3px] group-active:w-[3px]' : 'h-px w-full group-hover:h-[3px] group-active:h-[3px]'
+        }`}
+      />
     </div>
   )
 }

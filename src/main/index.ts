@@ -13,9 +13,11 @@ import { registerNotifyIpc } from './ipc/notify'
 import { registerSessionsIpc } from './ipc/sessions'
 import { disposeAllWatchers } from './fs/fsService'
 import { DesktopBackend } from './remote/DesktopBackend'
-import { onReportedSessionsChange } from './remote/sessionRegistry'
+import { onReportedSessionsChange, removeWindowSessions } from './remote/sessionRegistry'
 import { RemoteServer } from './remote/RemoteServer'
-import { loadRemoteConfig } from './store/persist'
+import { loadRemoteConfig, loadSettings } from './store/persist'
+import { aiKeepAwake } from './power/keepAwake'
+import { registerUpdaterIpc, checkForUpdatesOnLaunch, isQuittingForUpdate } from './updater/updater'
 
 const ptys = new PtyManager()
 
@@ -43,7 +45,16 @@ const remoteServer = new RemoteServer(remoteBackend, {
   keepAwake: loadRemoteConfig().keepAwake
 })
 
-function createWindow(): void {
+// Windows the user has confirmed closing (or that are closing for an update):
+// their `close` event is allowed through instead of prompting again.
+const allowClose = new WeakSet<BrowserWindow>()
+
+// The single window that owns the persisted session (restores + autosaves).
+// When it closes with others still open, ownership is handed to a survivor so
+// persistence never silently stops. Tracked by webContents id.
+let primaryWcId: number | null = null
+
+function createWindow(isPrimary: boolean): void {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -55,14 +66,55 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
-      sandbox: true
+      sandbox: true,
+      // The renderer reads its role from argv: only the primary window restores
+      // and persists the saved session, so extra windows can't clobber it.
+      additionalArguments: [`--qd-window-role=${isPrimary ? 'primary' : 'secondary'}`]
     }
   })
+  // webContents.id is stable for the window's life; capture it now so the
+  // `closed` handler (where webContents may be gone) can still clean up.
+  const wcId = win.webContents.id
+  if (isPrimary) primaryWcId = wcId
 
   win.on('ready-to-show', () => win.show())
 
   win.on('maximize', () => win.webContents.send(IPC.WindowMaximized, true))
   win.on('unmaximize', () => win.webContents.send(IPC.WindowMaximized, false))
+
+  // Every close path (✕ button, Alt+F4, taskbar, app quit) funnels through here.
+  // Ask the renderer to confirm first; it decides whether anything is at risk
+  // (live terminals/agents, unsaved edits) and calls back via WindowConfirmClose.
+  // An in-progress update install and already-confirmed closes pass straight
+  // through.
+  win.on('close', (e) => {
+    if (allowClose.has(win) || isQuittingForUpdate()) return
+    e.preventDefault()
+    win.webContents.send(IPC.WindowCloseRequest)
+  })
+
+  // If the renderer crashes it can never answer WindowCloseRequest, which would
+  // leave the window un-closable (and block app quit). Let a dead renderer's
+  // window close outright.
+  win.webContents.on('render-process-gone', () => {
+    allowClose.add(win)
+    if (!win.isDestroyed()) win.destroy()
+  })
+
+  win.on('closed', () => {
+    removeWindowSessions(wcId)
+    // Hand session ownership to a surviving window so persistence continues
+    // after the primary window is closed.
+    if (wcId === primaryWcId) {
+      const survivor = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+      if (survivor) {
+        primaryWcId = survivor.webContents.id
+        survivor.webContents.send(IPC.WindowSetPrimary)
+      } else {
+        primaryWcId = null
+      }
+    }
+  })
 
   // All external links open in the system browser, never inside the app
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -91,6 +143,18 @@ function registerWindowControls(): void {
     win.isMaximized() ? win.unmaximize() : win.maximize()
   })
   ipcMain.on(IPC.WindowClose, (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+
+  // Open another independent app window (secondary: starts fresh, doesn't touch
+  // the saved session).
+  ipcMain.on(IPC.WindowNew, () => createWindow(false))
+
+  // The renderer confirmed the close — let this window's next `close` through.
+  ipcMain.on(IPC.WindowConfirmClose, (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return
+    allowClose.add(win)
+    win.close()
+  })
 
   // Open a link in the OS default app. Restricted to http(s): terminal output is
   // untrusted, so we never hand arbitrary schemes (file:, custom protocols) to
@@ -123,6 +187,22 @@ function registerWindowControls(): void {
 }
 
 app.whenReady().then(() => {
+  // Single-instance: a second launch (re-running the exe / clicking the shortcut
+  // while running) must not start a rival process that fights over the shared
+  // session file, the RemoteDeck port, and the updater. Focus the existing
+  // window instead. Extra windows come only from WindowNew, in this process.
+  if (!app.requestSingleInstanceLock()) {
+    app.quit()
+    return
+  }
+  app.on('second-instance', () => {
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    if (win) {
+      if (win.isMinimized()) win.restore()
+      win.focus()
+    }
+  })
+
   registerWindowControls()
   registerPtyIpc(ptys)
   registerAgentIpc()
@@ -131,18 +211,25 @@ app.whenReady().then(() => {
   registerRemoteIpc(remoteServer)
   registerNotifyIpc()
   registerSessionsIpc()
+  registerUpdaterIpc()
+  // Honor the persisted "keep awake while AI is working" preference from launch;
+  // SettingsSave re-applies it whenever the toggle changes.
+  aiKeepAwake.setEnabled(loadSettings().general.keepAwakeWhileBusy)
   // Keep phones in sync as the desktop's open terminals change.
   onReportedSessionsChange(() => remoteServer.broadcastSessions())
   // Required on Windows for native desktop notifications to display.
   app.setAppUserModelId('app.terminaldeck.desktop')
-  createWindow()
+  createWindow(true)
 
   if (loadRemoteConfig().autoStart) {
     void remoteServer.start().catch((e) => console.error('[RemoteDeck] failed to start', e))
   }
 
+  // Surface an available update on its own shortly after launch (packaged only).
+  checkForUpdatesOnLaunch()
+
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(true)
   })
 })
 

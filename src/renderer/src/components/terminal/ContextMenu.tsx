@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { LucideIcon } from 'lucide-react'
 
 export interface MenuAction {
@@ -21,8 +21,9 @@ interface Props {
 export function ContextMenu({ x, y, actions, onClose }: Props): React.JSX.Element {
   const menuRef = useRef<HTMLDivElement>(null)
 
-  // keep the menu inside the window
-  useEffect(() => {
+  // keep the menu inside the window — clamp before paint so a menu opened near
+  // the viewport edge (e.g. a tall pane-header menu) never flashes off-screen
+  useLayoutEffect(() => {
     const el = menuRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()

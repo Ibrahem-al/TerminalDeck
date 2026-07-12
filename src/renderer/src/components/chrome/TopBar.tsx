@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react'
-import { ChevronsUpDown, ListTodo, PanelLeftOpen, PanelRightOpen, Settings, Smartphone } from 'lucide-react'
+import {
+  ChevronDown,
+  Copy,
+  ListTodo,
+  PanelLeftOpen,
+  PanelRightOpen,
+  Settings,
+  Smartphone
+} from 'lucide-react'
 import { useProjects } from '../../store/projects'
 import { useKanban } from '../../store/kanban'
 import { useExplorer } from '../../store/explorer'
@@ -57,11 +65,13 @@ const toolBtn =
 export function TopBar({
   onNewTab,
   onOpenProjects,
-  onOpenRemote
+  onOpenRemote,
+  onNewWindow
 }: {
   onNewTab: () => void
   onOpenProjects: () => void
   onOpenRemote: () => void
+  onNewWindow: () => void
 }): React.JSX.Element {
   const activeProjectId = useProjects((s) => s.activeProjectId)
   const projects = useProjects((s) => s.projects)
@@ -83,37 +93,38 @@ export function TopBar({
           </button>
         </div>
       )}
-      <div className="flex shrink-0 items-center pr-1 pl-2">
+      <div className="flex shrink-0 items-center pr-0.5 pl-2">
         <button
           onClick={onOpenProjects}
           title={
             activeProject
-              ? `${activeProject.name} — switch project (Ctrl+K)`
-              : 'Open a project (Ctrl+K)'
+              ? `${activeProject.name} — active project · switch (Ctrl+K)`
+              : 'No project — open one (Ctrl+K)'
           }
-          className="app-no-drag group flex items-center gap-1.5 rounded-md py-1 pr-1.5 pl-2 transition-colors duration-100 hover:bg-raised"
+          aria-label={activeProject ? `Active project: ${activeProject.name}. Switch project.` : 'Open a project'}
+          className="app-no-drag group flex items-center gap-1.5 rounded-full border border-edge-2/60 py-[3px] pr-1.5 pl-2 transition-colors duration-100 hover:border-edge hover:bg-raised/50"
         >
-          {activeProject ? (
-            <span
-              className="h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: activeProject.color }}
-              aria-hidden="true"
-            />
-          ) : (
-            <span className="h-2 w-2 shrink-0 rotate-45 bg-accent" aria-hidden="true" />
-          )}
           <span
-            className={`max-w-[160px] truncate font-ui text-[11.5px] font-semibold ${
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${activeProject ? '' : 'bg-ink-3'}`}
+            style={activeProject ? { backgroundColor: activeProject.color } : undefined}
+            aria-hidden="true"
+          />
+          <span
+            className={`max-w-[150px] truncate font-ui text-[11px] font-medium ${
               activeProject ? 'text-ink-2 group-hover:text-ink' : 'text-ink-3 group-hover:text-ink-2'
             }`}
           >
-            {activeProject ? activeProject.name : 'Select project'}
+            {activeProject ? activeProject.name : 'No project'}
           </span>
-          <ChevronsUpDown size={11} className="shrink-0 text-ink-3" aria-hidden="true" />
+          <ChevronDown
+            size={10}
+            className="shrink-0 text-ink-3 opacity-60 transition-opacity duration-100 group-hover:opacity-100"
+            aria-hidden="true"
+          />
         </button>
       </div>
 
-      <div className="mx-1.5 my-2 w-px shrink-0 self-stretch bg-edge-2" aria-hidden="true" />
+      <div className="mx-1.5 my-2.5 w-px shrink-0 self-stretch bg-edge-2/70" aria-hidden="true" />
 
       <div className="flex min-w-0 items-center">
         <WorkspaceTabs onNewTab={onNewTab} />
@@ -133,6 +144,14 @@ export function TopBar({
             <PanelRightOpen size={14} />
           </button>
         )}
+        <button
+          aria-label="New window"
+          title="New window (Ctrl+Shift+M)"
+          onClick={onNewWindow}
+          className={toolBtn}
+        >
+          <Copy size={14} />
+        </button>
         <button
           aria-label="Connect a phone (RemoteDeck)"
           title="RemoteDeck — control from your phone"

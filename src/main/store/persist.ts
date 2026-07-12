@@ -1,6 +1,6 @@
 import Store from 'electron-store'
 import { app, safeStorage } from 'electron'
-import { createHash, randomUUID, timingSafeEqual } from 'crypto'
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'crypto'
 import { homedir } from 'os'
 import {
   DEFAULT_NOTIFY_CONFIG,
@@ -40,6 +40,12 @@ interface Schema {
   allowedRoots: string[]
   /** RemoteDeck Agent config. (keepAwake added later; absent in old stores.) */
   remote: { autoStart: boolean; port: number; keepAwake?: boolean }
+  /**
+   * Access passcode (second pairing factor), stored only as a salted scrypt
+   * hash — never the plaintext. Null when no passcode is set. Required before
+   * exposing the Agent to the public internet via Tailscale Funnel.
+   */
+  remotePasscode: { salt: string; hash: string } | null
   /** Task-complete notification routing. */
   notify: NotifyConfig
   /** VAPID keypair for Web Push (generated once). */
@@ -61,6 +67,7 @@ const store = new Store<Schema>({
     devices: [],
     allowedRoots: [homedir()],
     remote: { autoStart: false, port: REMOTE_DEFAULT_PORT, keepAwake: true },
+    remotePasscode: null,
     notify: DEFAULT_NOTIFY_CONFIG,
     vapid: null,
     pushSubs: []
@@ -240,13 +247,52 @@ export function loadRemoteConfig(): RemoteConfig {
     port: r.port,
     // Default on for stores written before keep-awake existed.
     keepAwake: r.keepAwake ?? true,
-    allowedRoots: store.get('allowedRoots')
+    allowedRoots: store.get('allowedRoots'),
+    hasPasscode: hasRemotePasscode()
   }
 }
 
 export function saveRemoteConfig(cfg: RemoteConfig): void {
+  // Note: hasPasscode is intentionally not persisted here — the passcode is
+  // managed through setRemotePasscode so the renderer never round-trips it.
   store.set('remote', { autoStart: cfg.autoStart, port: cfg.port, keepAwake: cfg.keepAwake })
   store.set('allowedRoots', cfg.allowedRoots)
+}
+
+/* ── Access passcode (second pairing factor) ──────────────────────── */
+
+/** scrypt work factor is the Node default (N=16384); salt is per-passcode. */
+const PASSCODE_KEYLEN = 32
+
+export function hasRemotePasscode(): boolean {
+  return store.get('remotePasscode') !== null
+}
+
+/** Sets (or, with null/'' , clears) the access passcode. Stores only a salted hash. */
+export function setRemotePasscode(passcode: string | null): void {
+  const trimmed = passcode?.trim() ?? ''
+  if (trimmed === '') {
+    store.set('remotePasscode', null)
+    return
+  }
+  const salt = randomBytes(16)
+  const hash = scryptSync(trimmed, salt, PASSCODE_KEYLEN)
+  store.set('remotePasscode', { salt: salt.toString('hex'), hash: hash.toString('hex') })
+}
+
+/**
+ * Constant-time check of a presented passcode against the stored hash. Returns
+ * false when no passcode is set (callers gate on hasRemotePasscode first) or the
+ * presented value is empty.
+ */
+export function verifyRemotePasscode(passcode: string): boolean {
+  const rec = store.get('remotePasscode')
+  if (!rec) return false
+  const trimmed = passcode.trim()
+  if (trimmed === '') return false
+  const expected = Buffer.from(rec.hash, 'hex')
+  const actual = scryptSync(trimmed, Buffer.from(rec.salt, 'hex'), expected.length)
+  return actual.length === expected.length && timingSafeEqual(actual, expected)
 }
 
 export function getAllowedRoots(): string[] {
