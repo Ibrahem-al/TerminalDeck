@@ -54,9 +54,14 @@ npm run dist    # + package a Windows installer into dist/
 The app auto-updates from the GitHub Releases of `Ibrahem-al/TerminalDeck` (configured under `publish:` in `electron-builder.yml`). To cut a release:
 
 ```sh
-npm version patch                 # bump the version (also update the website)
-GH_TOKEN=<token> npm run release  # build + publish the installer, latest.yml, and blockmap
+npm version patch                    # bumps version + creates the v<x.y.z> git tag
+git push origin main --follow-tags   # push the tag FIRST — publish needs it to exist
+GH_TOKEN=<token> npm run release     # build + publish installer, latest.yml, blockmap
 ```
+
+> Push the tag before `npm run release`. With `releaseType: release`, GitHub
+> rejects creating a published release for a tag that doesn't exist yet
+> (422 "Published releases must have a valid tag").
 
 `npm run release` runs `electron-builder --win --publish always`, which uploads `TerminalDeck-Setup.exe` (version-less, so the website's download link is stable) plus the `latest.yml` feed that installed apps poll. Builds are unsigned (SmartScreen warns on first install; the in-place updater still works, since it verifies the SHA-512 from `latest.yml`).
 
