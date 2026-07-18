@@ -51,6 +51,18 @@ const SHORTCUTS: { keys: string; action: string }[] = [
   { keys: 'Ctrl+1–9', action: 'Switch workspace tab by index' },
   { keys: 'Ctrl+D', action: 'Split active pane right' },
   { keys: 'Ctrl+Shift+D', action: 'Split active pane down' },
+  { keys: 'Alt+←/→/↑/↓', action: 'Focus the pane in that direction' },
+  { keys: 'Alt+[ / Alt+]', action: 'Focus previous / next pane' },
+  { keys: 'Alt+Shift+←/→/↑/↓', action: 'Swap active pane with its neighbour' },
+  { keys: 'Prefix ←↑↓→ / hjkl', action: 'tmux: move to the adjacent pane' },
+  { keys: 'Prefix o / ;', action: 'tmux: next pane / last pane' },
+  { keys: 'Prefix % / "', action: 'tmux: split pane right / down' },
+  { keys: 'Prefix x / z', action: 'tmux: close / zoom the active pane' },
+  { keys: 'Prefix { / }', action: 'tmux: swap pane backward / forward' },
+  { keys: 'Prefix !', action: 'tmux: break pane out to a new deck' },
+  { keys: 'Prefix c / n / p', action: 'tmux: new deck / next / previous deck' },
+  { keys: 'Prefix 1–9', action: 'tmux: select deck by number' },
+  { keys: 'Prefix q', action: 'tmux: show pane numbers, digit to jump' },
   { keys: 'Ctrl+P', action: 'Quick Open file search' },
   { keys: 'Ctrl+K', action: 'Project switcher' },
   { keys: 'Ctrl+Shift+N', action: 'New project' },
@@ -643,16 +655,59 @@ export function SettingsPanel({ onEditProject, onNewProject }: Props): React.JSX
 
             {section === 'shortcuts' && (
               <div className="space-y-0">
+                <p className="pb-1 font-ui text-[11px] font-semibold tracking-wider text-ink-3 uppercase">
+                  Pane navigation (tmux-style)
+                </p>
+                <Row
+                  label="Direct pane navigation"
+                  hint="Alt + Arrow moves focus to the pane in that direction; Alt+[ / Alt+] cycle panes; Alt+Shift+Arrow swaps the pane with its neighbour. Ignored inside the code editor, which uses the Alt keys itself."
+                >
+                  <Toggle
+                    checked={settings.keys.directPaneNav}
+                    label="Direct pane navigation"
+                    onChange={(v) => update('keys', { directPaneNav: v })}
+                  />
+                </Row>
+                <Row
+                  label="tmux prefix mode"
+                  hint={'Press the prefix, then a command key: arrows or h/j/k/l move, o/; cycle, % / " split, x close, z zoom, { } swap, c/n/p/1–9 decks, q pane numbers. A hint shows while the prefix is armed.'}
+                >
+                  <Toggle
+                    checked={settings.keys.tmuxPrefixEnabled}
+                    label="tmux prefix mode"
+                    onChange={(v) => update('keys', { tmuxPrefixEnabled: v })}
+                  />
+                </Row>
+                <Row
+                  label="Prefix key"
+                  hint="The chord that arms prefix mode. It's captured from terminals, so it overrides that key there (e.g. Ctrl+A is normally start-of-line)."
+                >
+                  <select
+                    value={settings.keys.tmuxPrefix}
+                    aria-label="tmux prefix key"
+                    disabled={!settings.keys.tmuxPrefixEnabled}
+                    className={`${fieldCls} disabled:opacity-40`}
+                    onChange={(e) => update('keys', { tmuxPrefix: e.target.value as never })}
+                  >
+                    <option value="ctrl+a">Ctrl+A</option>
+                    <option value="ctrl+space">Ctrl+Space</option>
+                    <option value="alt+q">Alt+Q</option>
+                  </select>
+                </Row>
+
+                <p className="pt-6 pb-1 font-ui text-[11px] font-semibold tracking-wider text-ink-3 uppercase">
+                  All shortcuts
+                </p>
                 {SHORTCUTS.map((s) => (
-                  <div key={s.keys} className="flex items-center justify-between border-b border-edge-2 py-2 last:border-0">
+                  <div key={s.keys} className="flex items-center justify-between gap-4 border-b border-edge-2 py-2 last:border-0">
                     <span className="font-ui text-[12.5px] text-ink-2">{s.action}</span>
-                    <kbd className="rounded border border-edge bg-raised px-1.5 py-0.5 font-mono text-[11px] text-ink-2">
+                    <kbd className="shrink-0 rounded border border-edge bg-raised px-1.5 py-0.5 font-mono text-[11px] text-ink-2">
                       {s.keys}
                     </kbd>
                   </div>
                 ))}
                 <p className="pt-3 font-ui text-[11px] text-ink-3">
-                  Terminal copy/paste shortcuts can be turned on or off in Terminal settings. Custom rebinding is on the roadmap.
+                  “Prefix” means the tmux prefix key set above. Terminal copy/paste shortcuts are in Terminal settings.
                 </p>
               </div>
             )}

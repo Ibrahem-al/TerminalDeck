@@ -147,6 +147,83 @@ export function layoutGeometry(node: LayoutNode, rect: Rect = { x: 0, y: 0, w: 1
   return { rects, dividers }
 }
 
+/* ── Spatial pane navigation ──────────────────────────────────────── */
+
+export type Dir4 = 'left' | 'right' | 'up' | 'down'
+
+/** 1-D overlap length between [a, a+al] and [b, b+bl], in container percent. */
+function overlap1d(a: number, al: number, b: number, bl: number): number {
+  return Math.min(a + al, b + bl) - Math.max(a, b)
+}
+
+/**
+ * The pane spatially adjacent to `fromPaneId` in a direction, or null when the
+ * tree has no neighbour that way. Uses computed rectangles, so it follows what
+ * the user actually sees regardless of how the split tree is nested: it prefers
+ * the closest pane whose edge faces `fromPaneId` and that overlaps it on the
+ * perpendicular axis, falling back to the nearest-by-centre pane in that
+ * direction when nothing overlaps (offset grids).
+ */
+export function paneInDirection(node: LayoutNode, fromPaneId: string, dir: Dir4): string | null {
+  const { rects } = layoutGeometry(node)
+  const from = rects.get(fromPaneId)
+  if (!from) return null
+  const fcx = from.x + from.w / 2
+  const fcy = from.y + from.h / 2
+  const EPS = 0.5
+
+  let best: string | null = null
+  let bestScore = Infinity
+  let bestFallback: string | null = null
+  let bestFallbackScore = Infinity
+
+  for (const [id, r] of rects) {
+    if (id === fromPaneId) continue
+    const cx = r.x + r.w / 2
+    const cy = r.y + r.h / 2
+
+    let inDir: boolean
+    let along: number
+    let perp: number
+    let hasOverlap: boolean
+    if (dir === 'left') {
+      inDir = cx < fcx - EPS
+      along = fcx - cx
+      perp = Math.abs(cy - fcy)
+      hasOverlap = overlap1d(from.y, from.h, r.y, r.h) > 1
+    } else if (dir === 'right') {
+      inDir = cx > fcx + EPS
+      along = cx - fcx
+      perp = Math.abs(cy - fcy)
+      hasOverlap = overlap1d(from.y, from.h, r.y, r.h) > 1
+    } else if (dir === 'up') {
+      inDir = cy < fcy - EPS
+      along = fcy - cy
+      perp = Math.abs(cx - fcx)
+      hasOverlap = overlap1d(from.x, from.w, r.x, r.w) > 1
+    } else {
+      inDir = cy > fcy + EPS
+      along = cy - fcy
+      perp = Math.abs(cx - fcx)
+      hasOverlap = overlap1d(from.x, from.w, r.x, r.w) > 1
+    }
+    if (!inDir) continue
+
+    const score = along + perp * 3
+    if (hasOverlap) {
+      if (score < bestScore) {
+        bestScore = score
+        best = id
+      }
+    } else if (score < bestFallbackScore) {
+      bestFallbackScore = score
+      bestFallback = id
+    }
+  }
+
+  return best ?? bestFallback
+}
+
 /* ── Templates ────────────────────────────────────────────────────── */
 
 export interface Template {

@@ -118,6 +118,10 @@ export const IPC = {
 
 export type ShellKind = 'powershell' | 'pwsh' | 'cmd' | 'gitbash'
 
+/** Chord that arms the tmux-style pane-command prefix. Ctrl+B is deliberately
+ *  absent — it's already the sidebar toggle. */
+export type TmuxPrefix = 'ctrl+a' | 'ctrl+space' | 'alt+q'
+
 export interface ShellInfo {
   kind: ShellKind
   label: string
@@ -261,6 +265,24 @@ export interface AppSettings {
      */
     mouseSelectInApps: boolean
   }
+  /** tmux-style pane navigation shortcuts. */
+  keys: {
+    /**
+     * Direct (no-prefix) pane navigation: Alt+Arrow moves focus to the pane in
+     * that direction, Alt+[ / Alt+] cycle panes, Alt+Shift+Arrow swaps the active
+     * pane with its neighbour. Suppressed while a Monaco editor is focused (it owns
+     * the Alt keys); works from terminals, the agent composer, and app chrome.
+     */
+    directPaneNav: boolean
+    /**
+     * tmux-style prefix mode: press the prefix chord, then a command key (arrows /
+     * hjkl move, o/; cycle, % / " split, x close, z zoom, { } swap, c/n/p/1-9 decks,
+     * q pane numbers). A hint shows while the prefix is armed.
+     */
+    tmuxPrefixEnabled: boolean
+    /** Which chord arms the prefix (remappable). */
+    tmuxPrefix: TmuxPrefix
+  }
 }
 
 /**
@@ -298,6 +320,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     replaceSelectionOnType: true,
     copyOnSelect: true,
     mouseSelectInApps: true
+  },
+  keys: {
+    directPaneNav: true,
+    tmuxPrefixEnabled: true,
+    tmuxPrefix: 'ctrl+a'
   }
 }
 

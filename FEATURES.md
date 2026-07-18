@@ -209,6 +209,7 @@ Real pseudo-terminals — not emulated shells.
 - **Drag the pane header** to swap/rearrange panes within a tab (`swapPanes`) — sessions survive.
 - **Split menu (the `⌄` chevron):** choose a **direction** (Right = `row` / Down = `column`) and **what opens** (any detected shell, or the editor). Quick split buttons (right/down → default terminal) are always present.
 - Quick header actions: badge, pin, split-right, split-down, split-menu, close.
+- **tmux-style keyboard control** (`components/workspace/PaneShortcuts.tsx`, configurable in Settings → Shortcuts): two coexisting modes. **Direct** (no prefix) — `Alt+Arrow` moves focus to the pane in that direction (spatial neighbour via `paneInDirection`), `Alt+[`/`Alt+]` cycle, `Alt+Shift+Arrow` swaps the active pane with its neighbour. **Prefix** — a remappable chord (default `Ctrl+A`; also `Ctrl+Space`/`Alt+Q`) arms a one-shot command shown by an on-screen hint: arrows or `h/j/k/l` move, `o`/`;` next/last pane, `%`/`"` split right/down, `x`/`z` close/**zoom** (non-destructive full-tab maximize, `WorkspaceTab.zoomedPaneId`), `{`/`}` swap, `!` break pane out to a new deck, `c`/`n`/`p`/`1–9` deck ops, `q` shows **pane numbers** (digit to jump). The handler runs on the capture phase (before xterm) but stands off inside a real text field or Monaco so their native keys keep working; a shell's terminal counts as a terminal, so pane control works while typing. Switching to a pane pulls keyboard focus into it (terminal, agent composer, or editor).
 
 ### 4.5 Code editor (Monaco)
 
@@ -443,6 +444,16 @@ Self-tests (`scripts/`): `pty-selftest.js` (PTY round-trip inside Electron), `in
 | `Ctrl+Shift+M` | New app window |
 | `Ctrl+1`–`9` | Switch workspace tab |
 | `Ctrl+D` / `Ctrl+Shift+D` | Split pane right / down |
+| `Alt+←/→/↑/↓` | Focus the pane in that direction |
+| `Alt+[` / `Alt+]` | Focus previous / next pane |
+| `Alt+Shift+←/→/↑/↓` | Swap active pane with its neighbour |
+| `Prefix` then `←↑↓→` / `hjkl` | tmux: move to the adjacent pane |
+| `Prefix` then `o` / `;` | tmux: next pane / last pane |
+| `Prefix` then `%` / `"` | tmux: split right / down |
+| `Prefix` then `x` / `z` | tmux: close / zoom the active pane |
+| `Prefix` then `{` / `}` / `!` | tmux: swap back / forward / break out to new deck |
+| `Prefix` then `c` / `n` / `p` / `1–9` | tmux: new deck / next / previous / select deck |
+| `Prefix` then `q` | tmux: show pane numbers, digit to jump |
 | `Ctrl+Enter` | Launch Claude Code in active pane |
 | `Ctrl+P` | Quick Open file search |
 | `Ctrl+K` / `Ctrl+Shift+N` | Project switcher / new project |
@@ -453,6 +464,8 @@ Self-tests (`scripts/`): `pty-selftest.js` (PTY round-trip inside Electron), `in
 | `Ctrl+Shift+.` | Toggle hidden files |
 | `Ctrl+Shift+K` | Task board |
 | `Ctrl+,` | Settings |
+
+`Prefix` is the tmux prefix chord (default `Ctrl+A`, remappable in Settings → Shortcuts). Direct `Alt` navigation and prefix mode can each be toggled off there. The prefix is captured from terminals, so it overrides that key in the shell (e.g. `Ctrl+A`'s start-of-line) — pick `Ctrl+Space`/`Alt+Q` or disable if you need it.
 
 ---
 

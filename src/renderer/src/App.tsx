@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { TopBar } from './components/chrome/TopBar'
 import { Toaster } from './components/toast/Toaster'
 import { PaneLayer } from './components/workspace/PaneLayer'
+import { PaneShortcuts } from './components/workspace/PaneShortcuts'
 import { TemplatePicker } from './components/workspace/TemplatePicker'
 import { Sidebar } from './components/sidebar/Sidebar'
 import { QuickOpen } from './components/editor/QuickOpen'
@@ -244,6 +245,7 @@ export default function App(): React.JSX.Element {
         {sidebarSide === 'right' && <Sidebar />}
       </div>
       <Toaster />
+      <PaneShortcuts />
       {pickerOpen && (
         <TemplatePicker
           onPick={(template, projectId) => {

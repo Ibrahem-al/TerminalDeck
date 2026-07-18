@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
-import { Bot, EyeOff, FileCode2, Terminal, X } from 'lucide-react'
+import { Bot, EyeOff, FileCode2, Minimize2, Terminal, X } from 'lucide-react'
 import { useWorkspace, type PaneMeta } from '../../store/workspace'
+import { useKeymapUi } from '../../store/keymap'
 import { FloatingMenu } from '../common/FloatingMenu'
 import { layoutGeometry, MIN_RATIO, MAX_RATIO, type DividerInfo, type Geometry, type Rect } from './layout'
 import { PaneFrame } from './PaneFrame'
@@ -165,6 +166,31 @@ interface Placement {
   isActivePane: boolean
   isOnlyPane: boolean
   hidden: boolean
+  /** Active tab only: a sibling pane is zoomed, so this one is covered (stays mounted). */
+  zoomedAway: boolean
+}
+
+/** Number badges over each pane while the pane-number picker is up (tmux prefix q). */
+function PaneNumberOverlay({ geometry }: { geometry: Geometry }): React.JSX.Element {
+  const order = useMemo(() => [...geometry.rects.keys()], [geometry])
+  return (
+    <>
+      {order.map((paneId, i) => {
+        const rect = geometry.rects.get(paneId)!
+        return (
+          <div
+            key={paneId}
+            className="pointer-events-none absolute z-40 flex items-center justify-center"
+            style={{ left: `${rect.x}%`, top: `${rect.y}%`, width: `${rect.w}%`, height: `${rect.h}%` }}
+          >
+            <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-accent/60 bg-overlay/90 font-ui text-3xl font-bold text-accent shadow-xl backdrop-blur">
+              {i + 1}
+            </span>
+          </div>
+        )
+      })}
+    </>
+  )
 }
 
 /**
@@ -177,30 +203,48 @@ export function PaneLayer(): React.JSX.Element {
   const tabs = useWorkspace((s) => s.tabs)
   const panes = useWorkspace((s) => s.panes)
   const activeTabId = useWorkspace((s) => s.activeTabId)
+  const toggleZoom = useWorkspace((s) => s.toggleZoomActivePane)
+  const paneNumbers = useKeymapUi((s) => s.paneNumbers)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const { placement, activeGeometry, activeHidden } = useMemo(() => {
+  const { placement, activeGeometry, activeHidden, activeZoomed } = useMemo(() => {
     const placement = new Map<string, Placement>()
     let activeGeometry: Geometry | null = null
     let activeHidden: string[] = []
+    let activeZoomed = false
     const offscreen: Rect = { x: 0, y: 0, w: 100, h: 100 }
+    const full: Rect = { x: 0, y: 0, w: 100, h: 100 }
 
     for (const tab of tabs) {
       const geo = layoutGeometry(tab.layout)
       const isTabActive = tab.id === activeTabId
       const onlyPane = geo.rects.size === 1 && (tab.hidden?.length ?? 0) === 0
+      // A zoom only takes effect on the active tab, and only while the zoomed pane
+      // is still the active one AND still a live layout pane. Requiring it to equal
+      // activePaneId means any focus move (even one that bypasses setActivePane)
+      // can never leave the active pane hidden behind a stale zoom.
+      const zoomId =
+        isTabActive &&
+        tab.zoomedPaneId &&
+        tab.zoomedPaneId === tab.activePaneId &&
+        geo.rects.has(tab.zoomedPaneId)
+          ? tab.zoomedPaneId
+          : null
       if (isTabActive) {
-        activeGeometry = geo
+        // Hide dividers while zoomed — there's only one visible pane.
+        activeGeometry = zoomId ? { rects: geo.rects, dividers: [] } : geo
         activeHidden = tab.hidden ?? []
+        activeZoomed = zoomId !== null
       }
       for (const [paneId, rect] of geo.rects) {
         placement.set(paneId, {
-          rect,
+          rect: zoomId === paneId ? full : rect,
           tabId: tab.id,
           isTabActive,
           isActivePane: tab.activePaneId === paneId,
           isOnlyPane: onlyPane,
-          hidden: false
+          hidden: false,
+          zoomedAway: zoomId !== null && paneId !== zoomId
         })
       }
       for (const id of tab.hidden ?? []) {
@@ -210,11 +254,12 @@ export function PaneLayer(): React.JSX.Element {
           isTabActive,
           isActivePane: false,
           isOnlyPane: false,
-          hidden: true
+          hidden: true,
+          zoomedAway: false
         })
       }
     }
-    return { placement, activeGeometry, activeHidden }
+    return { placement, activeGeometry, activeHidden, activeZoomed }
   }, [tabs, activeTabId])
 
   return (
@@ -222,7 +267,7 @@ export function PaneLayer(): React.JSX.Element {
       {Object.values(panes).map((meta) => {
         const p = placement.get(meta.id)
         if (!p) return null
-        const visible = p.isTabActive && !p.hidden
+        const visible = p.isTabActive && !p.hidden && !p.zoomedAway
         return (
           <div
             key={meta.id}
@@ -233,7 +278,7 @@ export function PaneLayer(): React.JSX.Element {
               height: `${p.rect.h}%`
             }}
             aria-hidden={!visible}
-            className={`absolute p-1 ${visible ? '' : 'invisible opacity-0'} ${p.hidden || !p.isTabActive ? 'pointer-events-none' : ''}`}
+            className={`absolute p-1 ${visible ? '' : 'invisible opacity-0'} ${p.hidden || !p.isTabActive || p.zoomedAway ? 'pointer-events-none' : ''}`}
           >
             <PaneFrame
               pane={meta}
@@ -249,6 +294,19 @@ export function PaneLayer(): React.JSX.Element {
       {activeGeometry?.dividers.map((d) => (
         <Divider key={d.splitId} divider={d} tabId={activeTabId} containerRef={containerRef} />
       ))}
+
+      {activeZoomed && (
+        <button
+          onClick={toggleZoom}
+          title="Restore split view"
+          className="absolute top-2 right-3 z-30 flex items-center gap-1.5 rounded-md border border-edge bg-overlay/90 px-2 py-1 font-ui text-[10.5px] font-medium text-ink-2 shadow-lg backdrop-blur transition-colors duration-100 hover:text-ink"
+        >
+          <Minimize2 size={12} className="text-ink-3" aria-hidden="true" />
+          Zoomed
+        </button>
+      )}
+
+      {paneNumbers && !activeZoomed && activeGeometry && <PaneNumberOverlay geometry={activeGeometry} />}
 
       {activeHidden.length > 0 && <HiddenPanesMenu hidden={activeHidden} panes={panes} />}
     </div>

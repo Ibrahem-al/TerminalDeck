@@ -600,9 +600,9 @@ export const PaneFrame = memo(function PaneFrame({
             active={isActive && isTabActive}
           />
         ) : pane.kind === 'agent' ? (
-          <AgentChatPane cwd={pane.cwd} paneId={pane.id} />
+          <AgentChatPane cwd={pane.cwd} paneId={pane.id} active={isActive && isTabActive} />
         ) : (
-          <EditorPane paneId={pane.id} />
+          <EditorPane paneId={pane.id} active={isActive && isTabActive} />
         )}
       </div>
 

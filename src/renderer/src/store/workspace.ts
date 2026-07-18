@@ -3,11 +3,13 @@ import type { ShellKind } from '@shared/types'
 import {
   buildGrid,
   layoutGeometry,
+  paneInDirection,
   paneIdsIn,
   removePaneFromLayout,
   splitPaneInLayout,
   swapPanesInLayout,
   updateRatio,
+  type Dir4,
   type Direction,
   type LayoutNode,
   type Template
@@ -47,6 +49,17 @@ export interface WorkspaceTab {
   color: string
   layout: LayoutNode
   activePaneId: string
+  /**
+   * The pane that was active immediately before `activePaneId`, for tmux's
+   * "last pane" jump (prefix ;). Absent until focus has moved at least once.
+   */
+  lastActivePaneId?: string
+  /**
+   * The pane currently zoomed to fill the tab (tmux prefix z). Non-destructive:
+   * the layout is untouched; the other panes stay mounted but hidden. Cleared on
+   * any focus change, and ignored if it no longer names a pane in the layout.
+   */
+  zoomedPaneId?: string
   /** Project this tab belongs to, when it was opened from a project. */
   projectId?: string
   /**
@@ -119,6 +132,20 @@ interface WorkspaceStore {
   openInActiveTab: (spec: NewPaneSpec) => string | null
   closePane: (paneId: string) => void
   setActivePane: (tabId: string, paneId: string) => void
+  /** Moves focus to the pane spatially adjacent to the active one (tmux arrows/hjkl). */
+  focusPaneInDirection: (dir: Dir4) => void
+  /** Cycles focus through the active tab's panes in layout order (tmux o). */
+  focusAdjacentPane: (delta: 1 | -1) => void
+  /** Jumps back to the previously focused pane in the active tab (tmux ;). */
+  focusLastPane: () => void
+  /** Focuses the nth pane (1-based) in the active tab's layout order (pane numbers). */
+  focusPaneByOrdinal: (ordinal: number) => void
+  /** Swaps the active pane with its spatial neighbour, focus following (Alt+Shift+Arrow). */
+  swapActivePaneInDirection: (dir: Dir4) => void
+  /** Swaps the active pane with the next/previous pane in layout order (tmux { }). */
+  swapAdjacentPane: (delta: 1 | -1) => void
+  /** Zooms the active pane to fill the tab, or restores it (tmux z). */
+  toggleZoomActivePane: () => void
   renamePane: (paneId: string, name: string) => void
   setSplitRatio: (tabId: string, splitId: string, ratio: number) => void
   setPaneBadge: (paneId: string, badge: PaneBadge | null) => void
@@ -302,7 +329,12 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
       panes: { ...prev.panes, [pane.id]: pane },
       tabs: prev.tabs.map((t) =>
         t.id === tab.id
-          ? { ...t, layout: splitPaneInLayout(t.layout, paneId, direction, pane.id), activePaneId: pane.id }
+          ? {
+              ...t,
+              layout: splitPaneInLayout(t.layout, paneId, direction, pane.id),
+              activePaneId: pane.id,
+              zoomedPaneId: undefined // a split reveals the new pane — unzoom (like tmux)
+            }
           : t
       )
     }))
@@ -361,7 +393,75 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
 
   setActivePane: (tabId, paneId) =>
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, activePaneId: paneId } : t))
+      tabs: s.tabs.map((t) => {
+        // No-op on a redundant activation, so `lastActivePaneId` only tracks real
+        // moves and a click on the already-active pane doesn't clobber it.
+        if (t.id !== tabId || t.activePaneId === paneId) return t
+        // Any deliberate focus change restores a zoomed pane (matches tmux).
+        return { ...t, lastActivePaneId: t.activePaneId, activePaneId: paneId, zoomedPaneId: undefined }
+      })
+    })),
+
+  focusPaneInDirection: (dir) => {
+    const s = get()
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    if (!tab) return
+    const target = paneInDirection(tab.layout, tab.activePaneId, dir)
+    if (target) s.setActivePane(tab.id, target)
+  },
+
+  focusAdjacentPane: (delta) => {
+    const s = get()
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    if (!tab) return
+    const ids = paneIdsIn(tab.layout)
+    if (ids.length < 2) return
+    const i = ids.indexOf(tab.activePaneId)
+    s.setActivePane(tab.id, ids[(i + delta + ids.length) % ids.length])
+  },
+
+  focusLastPane: () => {
+    const s = get()
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    if (!tab || !tab.lastActivePaneId) return
+    if (paneIdsIn(tab.layout).includes(tab.lastActivePaneId)) s.setActivePane(tab.id, tab.lastActivePaneId)
+  },
+
+  focusPaneByOrdinal: (ordinal) => {
+    const s = get()
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    if (!tab) return
+    const ids = paneIdsIn(tab.layout)
+    const target = ids[ordinal - 1]
+    if (target) s.setActivePane(tab.id, target)
+  },
+
+  swapActivePaneInDirection: (dir) => {
+    const s = get()
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    if (!tab) return
+    const target = paneInDirection(tab.layout, tab.activePaneId, dir)
+    if (target) s.swapPanes(tab.activePaneId, target) // focus follows the pane (its id is unchanged)
+  },
+
+  swapAdjacentPane: (delta) => {
+    const s = get()
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    if (!tab) return
+    const ids = paneIdsIn(tab.layout)
+    if (ids.length < 2) return
+    const i = ids.indexOf(tab.activePaneId)
+    const j = (i + delta + ids.length) % ids.length
+    if (i !== j) s.swapPanes(ids[i], ids[j])
+  },
+
+  toggleZoomActivePane: () =>
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        t.id === s.activeTabId
+          ? { ...t, zoomedPaneId: t.zoomedPaneId === t.activePaneId ? undefined : t.activePaneId }
+          : t
+      )
     })),
 
   renamePane: (paneId, name) =>
@@ -419,7 +519,8 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
       const destUpdated: WorkspaceTab = {
         ...dest,
         layout: splitPaneInLayout(dest.layout, dest.activePaneId, 'row', paneId),
-        activePaneId: paneId
+        activePaneId: paneId,
+        zoomedPaneId: undefined // the moved-in pane becomes active — unzoom the destination
       }
       const srcUpdated = wasHidden
         ? { ...src, hidden: (src.hidden ?? []).filter((id) => id !== paneId) }
@@ -499,7 +600,8 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => ({
                 ...t,
                 hidden: (t.hidden ?? []).filter((id) => id !== paneId),
                 layout: splitPaneInLayout(t.layout, t.activePaneId, 'row', paneId),
-                activePaneId: paneId
+                activePaneId: paneId,
+                zoomedPaneId: undefined // restoring focuses the restored pane — unzoom
               }
             : t
         )

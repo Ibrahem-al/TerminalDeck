@@ -5,6 +5,7 @@ import { useTerminalSession } from './useTerminalSession'
 import { SearchBar } from './SearchBar'
 import { ContextMenu, type MenuAction } from './ContextMenu'
 import { PANE_DRAG_TYPE } from '../workspace/paneDrag'
+import { canPullPaneFocus } from '../workspace/paneFocus'
 import { getTreeDragPath, setTreeDragPath } from '../sidebar/dnd'
 
 interface Props {
@@ -47,7 +48,9 @@ export function TerminalPane({ shell, cwd, env, paneId, autoRun, active = true }
   // in the terminal instead of on <body> until the user clicks it.
   useEffect(() => {
     if (!active) return
-    const raf = requestAnimationFrame(() => focus())
+    const raf = requestAnimationFrame(() => {
+      if (canPullPaneFocus(null)) focus()
+    })
     return () => cancelAnimationFrame(raf)
   }, [active, focus])
 

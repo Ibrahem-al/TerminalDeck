@@ -7,6 +7,7 @@ import { useSettings } from '../../store/settings'
 import { useTheme } from '../../store/theme'
 import { themeById } from '../../styles/themes'
 import { fileIcon } from '../sidebar/fileIcons'
+import { canPullPaneFocus } from '../workspace/paneFocus'
 import { ConfirmDialog } from '../common/ConfirmDialog'
 
 function baseName(path: string): string {
@@ -16,9 +17,11 @@ function baseName(path: string): string {
 
 interface Props {
   paneId: string
+  /** Whether this is the focused pane — pulls the editor's cursor in on nav. */
+  active?: boolean
 }
 
-export function EditorPane({ paneId }: Props): React.JSX.Element {
+export function EditorPane({ paneId, active: isFocused = true }: Props): React.JSX.Element {
   const files = useEditorStore((s) => s.filesByPane[paneId]) ?? []
   const active = useEditorStore((s) => s.activeByPane[paneId]) ?? null
   const dirty = useEditorStore((s) => s.dirty)
@@ -135,6 +138,16 @@ export function EditorPane({ paneId }: Props): React.JSX.Element {
     },
     [paneId]
   )
+
+  // Panes stay mounted across deck switches; pull the editor's cursor in when this
+  // becomes the focused pane (e.g. after a pane-nav shortcut) so typing lands here.
+  useEffect(() => {
+    if (!isFocused) return
+    const raf = requestAnimationFrame(() => {
+      if (canPullPaneFocus(hostRef.current)) editorRef.current?.focus()
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [isFocused])
 
   // re-derive the Monaco theme when the app theme changes
   const themeVersion = useTheme((s) => s.version)

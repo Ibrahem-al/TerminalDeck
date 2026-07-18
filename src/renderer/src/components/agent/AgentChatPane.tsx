@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Bot, Check, Loader2, RotateCcw, X } from 'lucide-react'
 import type { AgentPermissionMode } from '@shared/types'
 import { registerPaneWriter, unregisterPaneWriter } from '../terminal/inputBus'
+import { canPullPaneFocus } from '../workspace/paneFocus'
 import { Composer, type SlashCommand } from './Composer'
 import { Markdown } from './Markdown'
 import { ToolCard } from './ToolCard'
@@ -55,9 +56,11 @@ function ConnectingState({ slow }: { slow: boolean }): React.JSX.Element {
 interface AgentChatPaneProps {
   cwd?: string
   paneId?: string
+  /** Whether this is the focused pane — pulls the composer's cursor in on nav. */
+  active?: boolean
 }
 
-export function AgentChatPane({ cwd, paneId }: AgentChatPaneProps = {}): React.JSX.Element {
+export function AgentChatPane({ cwd, paneId, active = true }: AgentChatPaneProps = {}): React.JSX.Element {
   const [items, setItems] = useState<TranscriptItem[]>([])
   const [busy, setBusy] = useState(false)
   const [agentId, setAgentId] = useState<string | null>(null)
@@ -72,7 +75,22 @@ export function AgentChatPane({ cwd, paneId }: AgentChatPaneProps = {}): React.J
   const lastErrRef = useRef<string>('')
   const startedRef = useRef(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
+
+  // Panes stay mounted across deck switches; pull the composer's cursor in when
+  // this becomes the focused pane (e.g. after a pane-nav shortcut) so typing lands
+  // here without a click. canPullPaneFocus keeps it from stealing focus from a
+  // full-screen overlay or a just-opened rename/badge/menu input elsewhere.
+  useEffect(() => {
+    if (!active) return
+    const raf = requestAnimationFrame(() => {
+      if (!canPullPaneFocus(rootRef.current)) return
+      const ta = rootRef.current?.querySelector('textarea')
+      if (ta && document.activeElement !== ta) ta.focus()
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [active])
 
   const start = useCallback(
     async (mode: AgentPermissionMode): Promise<void> => {
@@ -253,7 +271,7 @@ export function AgentChatPane({ cwd, paneId }: AgentChatPaneProps = {}): React.J
     busy && (lastItem?.type === 'user' || (lastItem?.type === 'assistant' && lastItem.segments.length === 0))
 
   return (
-    <div className="flex h-full flex-col bg-base">
+    <div ref={rootRef} className="flex h-full flex-col bg-base">
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         {items.length === 0 && !busy ? (
           phase === 'connecting' ? <ConnectingState slow={slowConnect} /> : <EmptyState />
