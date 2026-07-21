@@ -20,6 +20,9 @@ import { hooksStatus, installHooks, uninstallHooks } from './hooks'
 export function registerNotchIpc(ptys: PtyManager): void {
   // One live attachment per session; re-attach replaces (unsubscribing first).
   const attached = new Map<string, () => void>()
+  // One 'destroyed' hook per notch webContents (NOT per attach — a listener per
+  // attach leaks and trips MaxListenersExceeded as the user browses panes).
+  let destroyedHooked = false
 
   const detach = (sessionId: string): void => {
     attached.get(sessionId)?.()
@@ -44,9 +47,15 @@ export function registerNotchIpc(ptys: PtyManager): void {
   ipcMain.handle(IPC.NotchAttach, (e, sessionId: string, since: number): NotchAttachResult => {
     detach(sessionId)
     // If the notch window goes away (settings toggle, last-window teardown)
-    // without detaching, drop the subscription with it — otherwise it lingers
-    // in PtyManager until the session exits.
-    e.sender.once('destroyed', () => detach(sessionId))
+    // without detaching, drop every subscription with it — otherwise they
+    // linger in PtyManager until their sessions exit.
+    if (!destroyedHooked) {
+      destroyedHooked = true
+      e.sender.once('destroyed', () => {
+        destroyedHooked = false // a recreated notch window re-hooks on next attach
+        for (const id of [...attached.keys()]) detach(id)
+      })
+    }
     const dims = ptys.dims(sessionId)
     const send = (frame: NotchStreamFrame): void => {
       const w = notchWindow()
