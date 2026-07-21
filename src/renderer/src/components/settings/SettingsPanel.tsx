@@ -5,6 +5,7 @@ import {
   Info,
   Keyboard,
   Palette,
+  PanelTop,
   PencilLine,
   RefreshCw,
   Settings,
@@ -14,7 +15,13 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import { APP_NAME, INFINITE_SCROLLBACK, type Project, type ShellInfo } from '@shared/types'
+import {
+  APP_NAME,
+  INFINITE_SCROLLBACK,
+  type NotchHooksStatus,
+  type Project,
+  type ShellInfo
+} from '@shared/types'
 import { useSettings } from '../../store/settings'
 import { useProjects, sortedProjects } from '../../store/projects'
 import { useTheme } from '../../store/theme'
@@ -27,6 +34,7 @@ type SectionId =
   | 'general'
   | 'editor'
   | 'terminal'
+  | 'notch'
   | 'shortcuts'
   | 'themes'
   | 'projects'
@@ -37,6 +45,7 @@ const SECTIONS: { id: SectionId; label: string; icon: typeof Settings2 }[] = [
   { id: 'general', label: 'General', icon: Settings2 },
   { id: 'editor', label: 'Editor', icon: SquareCode },
   { id: 'terminal', label: 'Terminal', icon: Terminal },
+  { id: 'notch', label: 'Notch', icon: PanelTop },
   { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
   { id: 'themes', label: 'Themes', icon: Palette },
   { id: 'projects', label: 'Projects', icon: FolderGit2 },
@@ -291,6 +300,153 @@ function UpdatesSection(): React.JSX.Element {
   )
 }
 
+function NotchSection(): React.JSX.Element {
+  const settings = useSettings((s) => s.settings)
+  const update = useSettings((s) => s.update)
+  const [hooks, setHooks] = useState<NotchHooksStatus | null>(null)
+  const [hooksBusy, setHooksBusy] = useState(false)
+
+  useEffect(() => {
+    void window.quarterdeck.notch.hooksStatus().then(setHooks)
+  }, [])
+
+  const n = settings.notch
+
+  const toggleHooks = async (): Promise<void> => {
+    if (!hooks || hooksBusy) return
+    setHooksBusy(true)
+    try {
+      const next = hooks.installed
+        ? await window.quarterdeck.notch.hooksUninstall()
+        : await window.quarterdeck.notch.hooksInstall()
+      setHooks(next)
+    } finally {
+      setHooksBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <Row
+        label="Enable the notch"
+        hint="Always-on-top pill at the top of the screen that surfaces agent questions and finished work"
+      >
+        <Toggle checked={n.enabled} onChange={(v) => update('notch', { enabled: v })} label="Enable the notch" />
+      </Row>
+      <Row
+        label="Pill visibility"
+        hint="Hidden: appears for alerts, or when you park the mouse at the top-center screen edge (like taskbar auto-hide)"
+      >
+        <select
+          value={n.visibility}
+          aria-label="Pill visibility"
+          className={fieldCls}
+          onChange={(e) => update('notch', { visibility: e.target.value as 'always' | 'autohide' })}
+        >
+          <option value="always">Always visible</option>
+          <option value="autohide">Hidden until needed</option>
+        </select>
+      </Row>
+      <Row label="Size" hint="Overall size of the pill, alerts, and pulldown">
+        <select
+          value={String(n.scale)}
+          aria-label="Notch size"
+          className={fieldCls}
+          onChange={(e) => update('notch', { scale: Number(e.target.value) || 1 })}
+        >
+          <option value="0.85">Small</option>
+          <option value="1">Normal</option>
+          <option value="1.2">Large</option>
+          <option value="1.4">Extra large</option>
+        </select>
+      </Row>
+      <Row
+        label="Show while TerminalDeck is focused"
+        hint="Off: alerts only appear while you're working in other apps"
+      >
+        <Toggle
+          checked={n.showWhenFocused}
+          onChange={(v) => update('notch', { showWhenFocused: v })}
+          label="Show while TerminalDeck is focused"
+        />
+      </Row>
+      <Row
+        label="Auto-focus questions"
+        hint="When a question pops and you're not mid-typing, the pulldown takes the keyboard so you can answer immediately"
+      >
+        <Toggle
+          checked={n.autoFocusQuestions}
+          onChange={(v) => update('notch', { autoFocusQuestions: v })}
+          label="Auto-focus questions"
+        />
+      </Row>
+      <Row label="Turn finished" hint="Alert when an agent finishes a turn and is waiting for you">
+        <Toggle
+          checked={n.notifyTurnDone}
+          onChange={(v) => update('notch', { notifyTurnDone: v })}
+          label="Turn finished alerts"
+        />
+      </Row>
+      <Row label="Command finished" hint="Alert when a long shell command completes">
+        <Toggle
+          checked={n.notifyCommandDone}
+          onChange={(v) => update('notch', { notifyCommandDone: v })}
+          label="Command finished alerts"
+        />
+      </Row>
+      <Row label="Minimum command time" hint="Only alert for commands that ran at least this many seconds">
+        <input
+          type="number"
+          min={1}
+          max={3600}
+          value={n.minCommandSec}
+          aria-label="Minimum command time in seconds"
+          className={`${fieldCls} w-20`}
+          onChange={(e) =>
+            update('notch', { minCommandSec: Math.max(1, Math.min(3600, Number(e.target.value) || 15)) })
+          }
+        />
+      </Row>
+      <Row
+        label="Waiting-detection heuristics"
+        hint="Best-effort 'may be waiting for you' hints (screen content, bell, OSC 9) for CLIs without hooks"
+      >
+        <Toggle
+          checked={n.heuristics}
+          onChange={(v) => update('notch', { heuristics: v })}
+          label="Waiting-detection heuristics"
+        />
+      </Row>
+
+      <div className="mt-5 rounded-lg border border-edge-2 p-4">
+        <p className="font-ui text-[12.5px] font-semibold text-ink">Claude Code hooks — exact detection</p>
+        <p className="mt-1.5 font-ui text-[11.5px] leading-relaxed text-ink-3">
+          Installs a tiny hook into <code className="text-ink-2">~/.claude/settings.json</code> so Claude Code
+          tells TerminalDeck precisely when it needs your input or finishes a turn. The hook does nothing when
+          claude runs outside TerminalDeck, and takes effect for <b>newly started</b> claude sessions. Covers
+          claude running natively on this machine (not inside WSL).
+        </p>
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            onClick={() => void toggleHooks()}
+            disabled={!hooks || hooksBusy}
+            className="rounded-md border border-accent/50 bg-accent/10 px-3 py-1.5 font-ui text-[12px] font-medium text-accent transition-colors duration-100 hover:bg-accent/20 disabled:opacity-50"
+          >
+            {hooks === null ? 'Checking…' : hooks.installed ? 'Remove hooks' : 'Install hooks'}
+          </button>
+          <span className="font-ui text-[11px] text-ink-3">
+            {hooks?.error
+              ? `Failed: ${hooks.error}`
+              : hooks?.installed
+                ? 'Installed — exact detection active for new claude sessions'
+                : 'Not installed — the notch falls back to heuristics'}
+          </span>
+        </div>
+      </div>
+    </>
+  )
+}
+
 interface Props {
   onEditProject: (project: Project) => void
   onNewProject: () => void
@@ -448,12 +604,12 @@ export function SettingsPanel({ onEditProject, onNewProject }: Props): React.JSX
                   </select>
                 </Row>
                 <Row
-                  label="Keep computer awake while AI is working"
-                  hint="Prevents your PC from sleeping while any Claude chat pane is working, so agents keep running when you step away. The display can still sleep; it releases automatically once every chat is idle."
+                  label="Keep computer awake while agents are working"
+                  hint="Prevents your PC from sleeping while a Claude chat pane is working or a terminal is actively running a task (e.g. an agent you left running), so work isn't paused when you step away. The display can still sleep; it releases automatically once everything goes idle."
                 >
                   <Toggle
                     checked={settings.general.keepAwakeWhileBusy}
-                    label="Keep computer awake while AI is working"
+                    label="Keep computer awake while agents are working"
                     onChange={(v) => update('general', { keepAwakeWhileBusy: v })}
                   />
                 </Row>
@@ -711,6 +867,8 @@ export function SettingsPanel({ onEditProject, onNewProject }: Props): React.JSX
                 </p>
               </div>
             )}
+
+            {section === 'notch' && <NotchSection />}
 
             {section === 'themes' && <ThemesGrid />}
 

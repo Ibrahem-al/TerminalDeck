@@ -5,6 +5,7 @@ import { statSync } from 'fs'
 import { dirname, join } from 'path'
 import type { PtySession, PtySpawnOptions, ShellKind } from '@shared/types'
 import { buildShellLaunch } from './shellIntegration'
+import { aiKeepAwake } from '../power/keepAwake'
 import type { RemoteSubscriber, SubscribeResult } from '../remote/backend'
 
 interface SessionCallbacks {
@@ -71,6 +72,35 @@ interface Session {
 
 export class PtyManager {
   private sessions = new Map<string, Session>()
+  // Env vars injected into EVERY spawned shell (set once the notch hook server
+  // is listening). Always injected — behavior is gated at the hook server, so
+  // toggling the notch mid-session doesn't leave older panes invisible to hooks.
+  private extraEnv: Record<string, string> = {}
+  // Notch controller taps: session activity ('data' per chunk with its byte
+  // count, 'exit' once) and user input, for attention clearing and
+  // working-state tracking.
+  private activityListener: ((sessionId: string, event: 'data' | 'exit', bytes: number) => void) | null =
+    null
+  private writeListener: ((sessionId: string, data: string) => void) | null = null
+
+  /** Env vars merged into every future spawn (TERMINALDECK_SESSION_ID is per-session). */
+  setExtraEnv(env: Record<string, string>): void {
+    this.extraEnv = env
+  }
+
+  setActivityListener(fn: (sessionId: string, event: 'data' | 'exit', bytes: number) => void): void {
+    this.activityListener = fn
+  }
+
+  setWriteListener(fn: (sessionId: string, data: string) => void): void {
+    this.writeListener = fn
+  }
+
+  /** The PTY's live size, for mini terminals that must match it exactly. */
+  dims(sessionId: string): { cols: number; rows: number } | null {
+    const s = this.sessions.get(sessionId)
+    return s ? { cols: s.pty.cols, rows: s.pty.rows } : null
+  }
 
   create(options: PtySpawnOptions, callbacks: SessionCallbacks): PtySession {
     const launch = buildShellLaunch(options.shell)
@@ -82,7 +112,11 @@ export class PtyManager {
       cols: Math.max(2, options.cols),
       rows: Math.max(2, options.rows),
       cwd,
-      env: buildPtyEnv(options.env)
+      env: buildPtyEnv({
+        ...this.extraEnv,
+        ...options.env,
+        TERMINALDECK_SESSION_ID: sessionId
+      })
     })
 
     const session: Session = {
@@ -98,11 +132,17 @@ export class PtyManager {
     this.sessions.set(sessionId, session)
 
     pty.onData((data) => {
+      // Output means this terminal is doing work — hold the machine awake while
+      // an agent/task keeps producing output (no-op unless the setting is on).
+      aiKeepAwake.markTerminalActivity(sessionId)
+      this.activityListener?.(sessionId, 'data', data.length)
       this.fanOut(session, data) // ring + phone subscribers
       callbacks.onData(data) // the owning renderer pane (unchanged path)
     })
     pty.onExit(({ exitCode }) => {
       session.exited = true
+      aiKeepAwake.terminalGone(sessionId)
+      this.activityListener?.(sessionId, 'exit', 0)
       for (const sub of session.subs.values()) sub.onExit(exitCode)
       this.sessions.delete(sessionId)
       callbacks.onExit(exitCode)
@@ -160,7 +200,10 @@ export class PtyManager {
 
   write(sessionId: string, data: string): void {
     const s = this.sessions.get(sessionId)
-    if (s && !s.exited) s.pty.write(data)
+    if (s && !s.exited) {
+      this.writeListener?.(sessionId, data)
+      s.pty.write(data)
+    }
   }
 
   resize(sessionId: string, cols: number, rows: number): void {
@@ -168,6 +211,7 @@ export class PtyManager {
     if (!s) return
     try {
       s.pty.resize(Math.max(2, cols), Math.max(2, rows))
+      for (const sub of s.subs.values()) sub.onResize?.(s.pty.cols, s.pty.rows)
     } catch {
       // resizing a pty that exited this tick is a no-op, not an error
     }
@@ -177,6 +221,7 @@ export class PtyManager {
     const s = this.sessions.get(sessionId)
     if (!s) return
     this.sessions.delete(sessionId)
+    aiKeepAwake.terminalGone(sessionId)
     try {
       s.pty.kill()
     } catch {
@@ -185,7 +230,8 @@ export class PtyManager {
   }
 
   disposeAll(): void {
-    for (const [, s] of this.sessions) {
+    for (const [sessionId, s] of this.sessions) {
+      aiKeepAwake.terminalGone(sessionId)
       try {
         s.pty.kill()
       } catch {

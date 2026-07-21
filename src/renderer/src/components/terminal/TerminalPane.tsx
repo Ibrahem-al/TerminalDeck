@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ClipboardPaste, Copy, Eraser, RotateCcw } from 'lucide-react'
+import { ClipboardPaste, Copy, Eraser, RefreshCw, RotateCcw } from 'lucide-react'
 import type { ShellKind } from '@shared/types'
 import { useTerminalSession } from './useTerminalSession'
 import { SearchBar } from './SearchBar'
@@ -20,7 +20,7 @@ interface Props {
 }
 
 export function TerminalPane({ shell, cwd, env, paneId, autoRun, active = true }: Props): React.JSX.Element {
-  const { attachRef, altScreen, exitCode, searchResults, restart, focus, paste, getSelection, clear, search, clearSearch } =
+  const { attachRef, altScreen, exitCode, searchResults, restart, reload, focus, paste, getSelection, clear, search, clearSearch } =
     useTerminalSession({ shell, cwd, env, paneId, autoRun })
 
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
@@ -80,6 +80,11 @@ export function TerminalPane({ shell, cwd, env, paneId, autoRun, active = true }
         })
       }
     },
+    {
+      label: 'Reload display',
+      icon: RefreshCw,
+      onClick: reload
+    },
     { label: 'Clear terminal', icon: Eraser, onClick: clear }
   ]
 
@@ -110,7 +115,7 @@ export function TerminalPane({ shell, cwd, env, paneId, autoRun, active = true }
 
   return (
     <div
-      className="relative flex h-full flex-col bg-term"
+      className="group relative flex h-full flex-col bg-term"
       onContextMenu={(e) => {
         e.preventDefault()
         setMenu({ x: e.clientX, y: e.clientY })
@@ -145,6 +150,19 @@ export function TerminalPane({ shell, cwd, env, paneId, autoRun, active = true }
       <div className="min-h-0 flex-1 px-2 py-1.5" onClick={focus}>
         <div ref={attachRef} className="h-full w-full" />
       </div>
+
+      {!searchOpen && exitCode === null && (
+        <button
+          onClick={reload}
+          aria-label="Reload terminal display"
+          title={
+            'Reload display — re-fit & repaint if text looks garbled or invisible.\nKeeps scrollback and anything you’ve typed but not yet run.'
+          }
+          className="absolute top-1.5 right-1.5 z-20 rounded-md border border-edge bg-overlay/80 p-1 text-ink-3 opacity-0 shadow-sm backdrop-blur transition-opacity duration-100 hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          <RefreshCw size={12} aria-hidden="true" />
+        </button>
+      )}
 
       {exitCode !== null && (
         <div className="flex items-center justify-between border-t border-edge-2 bg-raised px-4 py-2">

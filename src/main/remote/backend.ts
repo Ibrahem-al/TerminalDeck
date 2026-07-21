@@ -9,6 +9,8 @@ export interface RemoteSubscriber {
   /** A live output chunk; `seq` is the cumulative byte count after this chunk. */
   onData: (seq: number, chunk: Buffer) => void
   onExit: (code: number) => void
+  /** The owning pane resized the PTY (notch mini-terminals track the real size). */
+  onResize?: (cols: number, rows: number) => void
 }
 
 export interface SubscribeResult {

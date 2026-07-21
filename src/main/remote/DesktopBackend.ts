@@ -14,7 +14,16 @@ const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * come from PtyManager's fan-out. Stopping the Agent never touches these PTYs.
  */
 export class DesktopBackend implements SessionBackend {
-  constructor(private readonly ptys: PtyManager) {}
+  /**
+   * @param targetWindow Supplies the app window that should host phone-opened
+   * panes. Injected so this pick can exclude the notch overlay window (which
+   * has no RemoteOpenPane handler — sending there would time out the phone).
+   */
+  constructor(
+    private readonly ptys: PtyManager,
+    private readonly targetWindow: () => BrowserWindow | null = () =>
+      BrowserWindow.getAllWindows().find((w) => !w.isDestroyed()) ?? null
+  ) {}
 
   list(): RemoteSessionInfo[] {
     return reportedSessions().filter((s) => this.ptys.has(s.id))
@@ -39,7 +48,7 @@ export class DesktopBackend implements SessionBackend {
   /** Phone "New session": ask the desktop UI to open a pane so it stays synced,
    *  then return the session once the new pane reports in. */
   async create(opts: RemoteCreateOptions): Promise<RemoteSessionInfo | null> {
-    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    const win = this.targetWindow()
     if (!win) return null
 
     let cwd = opts.cwd

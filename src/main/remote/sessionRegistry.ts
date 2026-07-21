@@ -9,16 +9,37 @@
 import type { RemoteSessionInfo } from '@shared/types'
 
 const byWindow = new Map<number, RemoteSessionInfo[]>()
-let changed: (() => void) | null = null
+const listeners = new Set<() => void>()
+
+function notifyChanged(): void {
+  for (const fn of listeners) fn()
+}
 
 export function setReportedSessions(windowId: number, list: RemoteSessionInfo[]): void {
   byWindow.set(windowId, list)
-  changed?.()
+  notifyChanged()
 }
 
 /** Drop a closed window's sessions from the merged view. */
 export function removeWindowSessions(windowId: number): void {
-  if (byWindow.delete(windowId)) changed?.()
+  if (byWindow.delete(windowId)) notifyChanged()
+}
+
+/** Which window (webContents id) reported a session, for jump-to-pane. */
+export function windowIdForSession(sessionId: string): number | null {
+  for (const [windowId, list] of byWindow) {
+    if (list.some((s) => s.id === sessionId)) return windowId
+  }
+  return null
+}
+
+/** The reported info for one session (title/paneId lookups). */
+export function sessionInfo(sessionId: string): RemoteSessionInfo | null {
+  for (const list of byWindow.values()) {
+    const found = list.find((s) => s.id === sessionId)
+    if (found) return found
+  }
+  return null
 }
 
 /** All windows' reported sessions, de-duplicated by session id (ids are unique
@@ -36,6 +57,11 @@ export function reportedSessions(): RemoteSessionInfo[] {
   return merged
 }
 
-export function onReportedSessionsChange(fn: () => void): void {
-  changed = fn
+/** Subscribe to registry changes. Multiple listeners are supported (phone
+ *  broadcast + notch controller); returns an unsubscribe. */
+export function onReportedSessionsChange(fn: () => void): () => void {
+  listeners.add(fn)
+  return () => {
+    listeners.delete(fn)
+  }
 }

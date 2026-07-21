@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
-import type { ShellKind } from '@shared/types'
+import type { NotchAgentSignal, ShellKind } from '@shared/types'
 import { readXtermTheme } from './xtermTheme'
 import { attachShellSignals } from './shellSignals'
 import { registerPaneWriter, unregisterPaneWriter } from './inputBus'
@@ -26,6 +26,36 @@ function beep(): void {
   osc.connect(gain).connect(beepCtx.destination)
   osc.start()
   osc.stop(beepCtx.currentTime + 0.13)
+}
+
+/**
+ * Load xterm's GPU (WebGL) renderer, degrading gracefully. Chromium caps active
+ * WebGL contexts (~16 per renderer); with many terminal panes open the browser
+ * force-loses the least-recently-used context. When that happens we dispose the
+ * addon — xterm falls back to its DOM renderer — and force a repaint on the next
+ * frame, so the pane keeps drawing instead of going blank (the "text became
+ * invisible" bug). `ref` tracks the live addon (null once lost) so a manual
+ * reload can re-establish it.
+ */
+function loadWebglRenderer(term: Terminal, ref: { current: WebglAddon | null }): void {
+  try {
+    const webgl = new WebglAddon()
+    webgl.onContextLoss(() => {
+      webgl.dispose()
+      ref.current = null
+      requestAnimationFrame(() => {
+        try {
+          term.refresh(0, term.rows - 1)
+        } catch {
+          // terminal disposed between loss and repaint — nothing to redraw
+        }
+      })
+    })
+    term.loadAddon(webgl)
+    ref.current = webgl
+  } catch {
+    ref.current = null // GPU unavailable — xterm uses its DOM renderer
+  }
 }
 
 /** Theme-aware search highlight colours. */
@@ -56,6 +86,12 @@ export interface TerminalSession {
   exitCode: number | null
   searchResults: SearchResults
   restart: () => void
+  /**
+   * Re-fit and repaint the live terminal without restarting it — fixes garbled or
+   * invisible text (lost GPU context, phone-attach size desync) while keeping the
+   * scrollback buffer and the shell's unentered input line intact.
+   */
+  reload: () => void
   focus: () => void
   paste: (text: string) => void
   getSelection: () => string
@@ -82,14 +118,17 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
   const elRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
+  const webglRef = useRef<WebglAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const inputStartRef = useRef<{ line: number; col: number } | null>(null)
   const startedRef = useRef(false)
+  const startingRef = useRef(false)
   const cleanupRef = useRef<(() => void)[]>([])
 
   const start = useCallback(
     async (el: HTMLDivElement): Promise<void> => {
+      startingRef.current = true
       // correct glyph metrics require the mono font before xterm opens
       await Promise.all([
         document.fonts.load('400 13px "IBM Plex Mono"'),
@@ -106,7 +145,14 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
         lineHeight: 1.35,
         letterSpacing: 0,
         scrollback: ts.scrollback,
-        theme: readXtermTheme()
+        theme: readXtermTheme(),
+        // On Windows, tell xterm the pty is ConPTY so it scrolls rows into the
+        // scrollback when the terminal grows instead of replacing them — without this,
+        // growing a pane running a full-screen TUI like claude garbles the buffer.
+        // buildNumber (from main) keeps reflow correct for the running ConPTY build.
+        ...(window.quarterdeck.platform === 'win32'
+          ? { windowsPty: { backend: 'conpty' as const, buildNumber: window.quarterdeck.windowsBuild || undefined } }
+          : {})
       })
       termRef.current = term
 
@@ -231,14 +277,23 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
         })
       )
       term.open(el)
-      try {
-        const webgl = new WebglAddon()
-        webgl.onContextLoss(() => webgl.dispose())
-        term.loadAddon(webgl)
-      } catch {
-        // GPU unavailable — xterm falls back to its DOM renderer
-      }
+      loadWebglRenderer(term, webglRef)
       fit.fit()
+
+      // Wire keystrokes to the pty *before* the spawn round-trip below. The pane is
+      // already open and (via TerminalPane) focus-pulled, so anything typed during
+      // the async create() would otherwise be lost — xterm doesn't buffer onData for
+      // a late subscriber, and dropped startup keystrokes are exactly why a fresh
+      // terminal can look "stuck" and refuse commands. Queue locally until the
+      // session exists, then flush in order so nothing is dropped.
+      let pendingInput: string[] = []
+      const offInput = term.onData((data) => {
+        const id = sessionIdRef.current
+        if (id) window.quarterdeck.pty.write(id, data)
+        // Cap the pre-session buffer so a spawn that never completes can't grow it
+        // without bound; 4096 keystrokes is far more than any real startup gap.
+        else if (pendingInput.length < 4096) pendingInput.push(data)
+      })
 
       const session = await window.quarterdeck.pty.create({
         shell,
@@ -248,23 +303,82 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
         rows: term.rows
       })
       sessionIdRef.current = session.sessionId
+      // Replay anything typed during the spawn gap, in order — but only for a plain
+      // terminal. On an auto-run pane the point of the pane IS the auto-start command,
+      // so replaying stray typeahead ahead of it would splice into that command (a
+      // typed "ls" turning `claude` into `lsclaude`); drop it there instead.
+      if (!autoRun) {
+        for (const d of pendingInput) window.quarterdeck.pty.write(session.sessionId, d)
+      }
+      pendingInput = []
       // register so the Agent can mirror this terminal to the phone
       if (paneId) usePtySessions.getState().setSession(paneId, session.sessionId)
 
-      // expose this pane to the input bus once the shell can take input
+      // Expose this pane to the input bus and fire auto-start once the shell is up.
+      // Readiness is the first shell-integration prompt marker (133;A). An
+      // unconditional fallback timer also arms, so a shell whose integration never
+      // emits a marker (a prompt overridden by the user's config, or cmd.exe) still
+      // becomes ready and never starves auto-start / queued `sendToPane` input.
+      // (133;A and 133;B ship in one prompt write before the line editor reads, so
+      // gating on B instead of A would buy nothing and break prompt frameworks that
+      // regenerate the marker-bearing prompt string.)
       let readyTimer: ReturnType<typeof setTimeout> | undefined
-      let autoRunSent = false
+      let ready = false
       const markReady = (): void => {
+        if (ready) return
+        ready = true
         clearTimeout(readyTimer)
         if (paneId) {
           registerPaneWriter(paneId, (data) => window.quarterdeck.pty.write(session.sessionId, data))
         }
-        // auto-launch a command (e.g. `claude`) on the first ready prompt
-        if (autoRun && !autoRunSent) {
-          autoRunSent = true
-          window.quarterdeck.pty.write(session.sessionId, autoRun + '\r')
-        }
+        if (autoRun) window.quarterdeck.pty.write(session.sessionId, autoRun + '\r')
       }
+      // The marker path fires far sooner in the normal case; this only backstops it.
+      readyTimer = setTimeout(markReady, session.integrated ? 3000 : 1200)
+
+      // ── Notch attention signals ────────────────────────────────────────
+      // The terminal renderer owns ground truth for "is this pane waiting for
+      // you": main only sees the byte stream (emit order ≠ screen order for
+      // redrawing TUIs), so command state, bell/OSC-9 hints, and the screen-
+      // content heuristic are detected here and reported per session.
+      const notchSignal = (s: NotchAgentSignal): void =>
+        window.quarterdeck.notch.agentSignal(session.sessionId, s)
+      let commandRunning = false
+      // One-shot latch per quiet period: armed by output, consumed by a check.
+      const heur = { lastOutputAt: 0, burstBytes: 0, latched: true, lastBellAt: 0 }
+      const heurOnOutput = (len: number): void => {
+        const now = Date.now()
+        if (now - heur.lastOutputAt > 3000) heur.burstBytes = 0 // a new activity burst
+        heur.lastOutputAt = now
+        heur.burstBytes += len
+        heur.latched = false
+      }
+      // Question shapes agent CLIs actually draw at rest (screen order, bottom
+      // rows) — deliberately conservative; this is the low-confidence fallback
+      // for CLIs without hook coverage.
+      const QUESTION_RX =
+        /(do you want|❯|\(y\/n\)|\[y\/n\]|permission|waiting for (your )?input|press enter|continue\?)/i
+      const heurTimer = setInterval(() => {
+        if (heur.latched || !commandRunning) return
+        if (!useSettings.getState().settings.notch.heuristics) return
+        const buf = term.buffer.active
+        if (buf.type === 'alternate') return // vim/htop etc. idle quietly by design
+        // Only a working→quiet transition counts: a real output burst followed
+        // by sustained silence (idle REPL prompts never re-trigger — their
+        // startup burst latched long ago).
+        if (Date.now() - heur.lastOutputAt < 8000 || heur.burstBytes < 200) return
+        heur.latched = true // one buffer scan per quiet period, match or not
+        const lines: string[] = []
+        for (let y = buf.baseY + term.rows - 1; y >= buf.baseY && lines.length < 6; y--) {
+          const text = buf.getLine(y)?.translateToString(true).trimEnd() ?? ''
+          if (text === '' && lines.length === 0) continue
+          lines.unshift(text)
+        }
+        const last = lines[lines.length - 1] ?? ''
+        if (QUESTION_RX.test(lines.join('\n')) || /\?\s*$/.test(last)) {
+          notchSignal({ kind: 'maybe-waiting' })
+        }
+      }, 2500)
 
       let signals: { dispose: () => void } | null = null
       if (session.integrated) {
@@ -275,7 +389,21 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
             useKanban.getState().onPaneCommandExit(paneId, code)
             // Let main decide whether to alert (route + duration threshold).
             const name = useWorkspace.getState().panes[paneId]?.name ?? 'Terminal'
-            window.quarterdeck.notify.taskComplete({ title: name, exitCode: code, durationMs })
+            window.quarterdeck.notify.taskComplete({
+              title: name,
+              exitCode: code,
+              durationMs,
+              sessionId: session.sessionId,
+              paneId
+            })
+          },
+          onCommandState: (running) => {
+            commandRunning = running
+            if (running) heur.burstBytes = 0
+            notchSignal({ kind: 'command-state', running })
+          },
+          onNotify: (message) => {
+            if (commandRunning) notchSignal({ kind: 'osc9', message })
           },
           onCwd: (cwd) => {
             if (paneId) usePaneCwd.getState().setCwd(paneId, cwd)
@@ -284,9 +412,6 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
             inputStartRef.current = pos
           }
         })
-      } else {
-        // no prompt marker from cmd.exe — give the shell a beat to start
-        readyTimer = setTimeout(markReady, 1200)
       }
 
       const offSearch = search.onDidChangeResults(({ resultCount, resultIndex }) =>
@@ -294,16 +419,23 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
       )
       const offBell = term.onBell(() => {
         if (useSettings.getState().settings.terminal.bell) beep()
+        // A bell from a running non-alt-screen app is a deliberate "look at me"
+        // (Claude Code's terminal_bell channel) — hook-quality timing, no setup.
+        const now = Date.now()
+        if (commandRunning && term.buffer.active.type !== 'alternate' && now - heur.lastBellAt > 15_000) {
+          heur.lastBellAt = now
+          notchSignal({ kind: 'bell' })
+        }
       })
       const offBuffer = term.buffer.onBufferChange((buf) => setAltScreen(buf.type === 'alternate'))
       const offData = window.quarterdeck.pty.onData((id, data) => {
-        if (id === session.sessionId) term.write(data)
+        if (id === session.sessionId) {
+          heurOnOutput(data.length)
+          term.write(data)
+        }
       })
       const offExit = window.quarterdeck.pty.onExit((id, code) => {
         if (id === session.sessionId) setExitCode(code)
-      })
-      const offInput = term.onData((data) => {
-        window.quarterdeck.pty.write(session.sessionId, data)
       })
       const offResize = term.onResize(({ cols, rows }) => {
         window.quarterdeck.pty.resize(session.sessionId, cols, rows)
@@ -480,6 +612,7 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
         () => observer.disconnect(),
         () => cancelAnimationFrame(raf),
         () => clearTimeout(readyTimer),
+        () => clearInterval(heurTimer),
         () => {
           if (paneId) unregisterPaneWriter(paneId)
         },
@@ -517,29 +650,72 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
       elRef.current = el
       if (el && !startedRef.current) {
         startedRef.current = true
-        void start(el)
+        void start(el).finally(() => {
+          startingRef.current = false
+        })
       }
     },
     [start]
   )
 
   const restart = useCallback((): void => {
+    // A start still in flight would double-mount on the same element (its cleanup
+    // list isn't assigned until it finishes), stacking two xterms and leaking a
+    // pty — ignore restart requests until the in-flight start settles.
+    if (startingRef.current) return
     for (const fn of cleanupRef.current) fn()
     cleanupRef.current = []
     termRef.current = null
     searchRef.current = null
     fitRef.current = null
+    webglRef.current = null
     sessionIdRef.current = null
     inputStartRef.current = null
     setAltScreen(false)
     setExitCode(null)
     setSearchResults({ count: 0, index: -1 })
     if (elRef.current) {
-      void start(elRef.current)
+      void start(elRef.current).finally(() => {
+        startingRef.current = false
+      })
     } else {
       startedRef.current = false
     }
   }, [start])
+
+  const reload = useCallback((): void => {
+    const term = termRef.current
+    if (!term) return
+    // Re-fit to the current container; a changed size fires onResize → pty.resize.
+    try {
+      fitRef.current?.fit()
+    } catch {
+      // fit can throw if the host element is momentarily detached — ignore
+    }
+    // Force-resync the pty even when xterm's dims are unchanged. A RemoteDeck phone
+    // attach (or a resize while this pane was hidden) can leave ConPTY at a size the
+    // desktop xterm never matched; fit() is then a no-op and the shell keeps drawing
+    // at the wrong width. An explicit resize re-syncs it and makes the app repaint.
+    const id = sessionIdRef.current
+    if (id) window.quarterdeck.pty.resize(id, term.cols, term.rows)
+    // Reset the GPU renderer: dispose any current addon — even one still sitting out
+    // its ~3s restore window after a context loss, so it looks alive but paints
+    // nothing — and re-acquire a fresh context (or fall back to the DOM renderer if
+    // the GPU is gone). This is what actually un-blanks a pane whose WebGL context was
+    // evicted with too many terminals open. Rebuild the glyph atlas and repaint every
+    // row. Nothing here recreates the Terminal or pty, so scrollback and the shell's
+    // unentered input line are kept.
+    webglRef.current?.dispose()
+    webglRef.current = null
+    loadWebglRenderer(term, webglRef)
+    try {
+      term.clearTextureAtlas()
+    } catch {
+      // DOM renderer has no atlas — the refresh below still repaints
+    }
+    term.refresh(0, term.rows - 1)
+    term.focus()
+  }, [])
 
   const focus = useCallback((): void => termRef.current?.focus(), [])
 
@@ -601,6 +777,7 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
     exitCode,
     searchResults,
     restart,
+    reload,
     focus,
     paste,
     getSelection,

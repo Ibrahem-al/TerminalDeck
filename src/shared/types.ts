@@ -113,7 +113,36 @@ export const IPC = {
 
   // Session sync (renderer ⇄ Agent): the phone mirrors the desktop's open panes
   SessionsReport: 'sessions:report',
-  RemoteOpenPane: 'remote:open-pane'
+  RemoteOpenPane: 'remote:open-pane',
+
+  // Notch — always-on-top agent-attention pill (see src/main/notch/)
+  /** Main → notch renderer: full attention state (also the invoke catch-up). */
+  NotchState: 'notch:state',
+  NotchGetState: 'notch:get-state',
+  /** Notch renderer → main: dismiss an attention item. */
+  NotchDismiss: 'notch:dismiss',
+  /** Notch renderer → main: focus the item's pane in the real app window. */
+  NotchJump: 'notch:jump',
+  /** Notch renderer ⇄ main: attach/detach a read-write view of a live PTY. */
+  NotchAttach: 'notch:attach',
+  NotchDetach: 'notch:detach',
+  /** Main → notch renderer: one stream frame (data / exit / resize) for an attached PTY. */
+  NotchStream: 'notch:stream',
+  /** Notch renderer → main: toggle click-through for the transparent overlay. */
+  NotchSetIgnoreMouse: 'notch:set-ignore-mouse',
+  /** Notch renderer → main: the visible UI's screen-space rect (hover target). */
+  NotchUiRect: 'notch:ui-rect',
+  /** Main → notch renderer: cursor entered/left the visible UI (main-side poll —
+   *  forwarded mousemove on click-through windows is unreliable on Windows). */
+  NotchHover: 'notch:hover',
+  /** Main windows' renderer → main: per-session agent signals (heuristics, bell, OSC 9). */
+  NotchAgentSignal: 'notch:agent-signal',
+  /** Main window renderer ⇄ main: Claude Code hooks install state / install / uninstall. */
+  NotchHooksStatus: 'notch:hooks-status',
+  NotchHooksInstall: 'notch:hooks-install',
+  NotchHooksUninstall: 'notch:hooks-uninstall',
+  /** Main → app renderer: focus this pane (activate its tab, restore if hidden). */
+  PaneFocus: 'pane:focus'
 } as const
 
 export type ShellKind = 'powershell' | 'pwsh' | 'cmd' | 'gitbash'
@@ -218,9 +247,11 @@ export interface AppSettings {
     defaultProjectId: string | null
     sidebarSide: 'left' | 'right'
     /**
-     * Keep the PC awake (no idle system sleep) while any embedded Claude chat
-     * pane is actively working, so agents aren't paused when you step away. The
-     * display may still sleep; releases automatically once every chat is idle.
+     * Keep the PC awake (no idle system sleep) while agents are working — either
+     * an embedded Claude chat pane running a turn, or a terminal actively
+     * producing output (an agent/task you left running) — so work isn't paused
+     * when you step away. The display may still sleep; releases automatically
+     * once every chat and terminal has gone idle.
      */
     keepAwakeWhileBusy: boolean
     /**
@@ -264,6 +295,42 @@ export interface AppSettings {
      * the app there. (Shift+drag always selects regardless.)
      */
     mouseSelectInApps: boolean
+  }
+  /**
+   * Notch — the always-on-top pill at the top of the screen that surfaces
+   * agent attention (questions, finished turns, finished commands) and lets
+   * you reply from a pulldown mini terminal without switching windows.
+   */
+  notch: {
+    enabled: boolean
+    /**
+     * 'always': the pill is a persistent fixture at the top of the screen.
+     * 'autohide': hidden until an agent wants your attention OR the mouse is
+     * parked at the top-center screen edge (taskbar-style reveal).
+     */
+    visibility: 'always' | 'autohide'
+    /** Overall size multiplier for the pill/alert/panel (0.85–1.5). */
+    scale: number
+    /** Show notch alerts even while a TerminalDeck window is focused. */
+    showWhenFocused: boolean
+    /**
+     * When a question auto-expands and you haven't typed/moved for a couple of
+     * seconds (i.e. you're not mid-typing somewhere else), give the pulldown
+     * keyboard focus so the answer can be typed immediately.
+     */
+    autoFocusQuestions: boolean
+    /**
+     * Best-effort "an agent may be waiting for you" detection for CLIs without
+     * hook coverage (screen-content heuristics, terminal bell, OSC 9 toasts).
+     * Low confidence by design — exact detection comes from Claude Code hooks.
+     */
+    heuristics: boolean
+    /** Surface "agent finished a turn" (Claude Code Stop hook / chat result). */
+    notifyTurnDone: boolean
+    /** Surface "shell command finished" for commands that ran long enough. */
+    notifyCommandDone: boolean
+    /** Minimum run time (seconds) before a finished command is surfaced. */
+    minCommandSec: number
   }
   /** tmux-style pane navigation shortcuts. */
   keys: {
@@ -321,6 +388,17 @@ export const DEFAULT_SETTINGS: AppSettings = {
     copyOnSelect: true,
     mouseSelectInApps: true
   },
+  notch: {
+    enabled: true,
+    visibility: 'always',
+    scale: 1,
+    showWhenFocused: true,
+    autoFocusQuestions: true,
+    heuristics: true,
+    notifyTurnDone: true,
+    notifyCommandDone: true,
+    minCommandSec: 15
+  },
   keys: {
     directPaneNav: true,
     tmuxPrefixEnabled: true,
@@ -360,6 +438,8 @@ export interface AgentSpawnOptions {
   /** Defaults to the user's home directory. */
   cwd?: string
   permissionMode?: AgentPermissionMode
+  /** Workspace pane hosting this chat, so notch attentions can jump to it. */
+  paneId?: string
 }
 
 export interface AgentSessionInfo {
@@ -377,6 +457,9 @@ export type AgentEvent =
   | { kind: 'assistant-message'; blocks: AgentBlock[] }
   | { kind: 'tool-result'; toolUseId: string; isError: boolean; preview: string }
   | { kind: 'permission-request'; requestId: string; toolName: string; input: unknown }
+  /** Echoed by main when a permission was answered from ANOTHER surface (the
+   *  notch), so the pane's Allow/Deny card resolves instead of staying live. */
+  | { kind: 'permission-resolved'; requestId: string; allow: boolean }
   | { kind: 'result'; isError: boolean; costUsd: number; durationMs: number; errorText?: string }
   | { kind: 'stderr'; text: string }
   | { kind: 'exit'; code: number }
@@ -487,6 +570,8 @@ export interface RemoteSessionInfo {
   busy: boolean
   alive: boolean
   createdAt: number
+  /** Workspace pane hosting the session (notch jump-to-pane). Extra field — phone ignores it. */
+  paneId?: string
 }
 
 export interface RemoteCreateOptions {
@@ -540,6 +625,9 @@ export interface TaskCompletePayload {
   durationMs: number
   /** Optional extra context (cwd, command…). */
   detail?: string
+  /** PTY session + pane that ran the command (notch jump / mini-terminal attach). */
+  sessionId?: string
+  paneId?: string
 }
 
 /* ── In-app auto-update (electron-updater) ────────────────────────── */
@@ -575,4 +663,113 @@ export interface WebPushSubscription {
   endpoint: string
   expirationTime?: number | null
   keys: { p256dh: string; auth: string }
+}
+
+/* ── Notch: agent-attention pill + pulldown ───────────────────────── */
+
+export type NotchAttentionKind = 'question' | 'turn-done' | 'command-done' | 'maybe-waiting'
+
+/**
+ * One thing an agent wants from you. At most one per session/agent (latest
+ * wins), so the pulldown never fills with stale duplicates of the same pane.
+ */
+export interface NotchAttention {
+  id: string
+  kind: NotchAttentionKind
+  /** What produced it: chat pane events, Claude Code hooks, heuristics, or a shell command. */
+  source: 'chat' | 'hook' | 'heuristic' | 'command'
+  /** PTY session (terminal sources) — attachable via NotchAttach. */
+  sessionId?: string
+  /** Embedded chat pane (chat source) — reply via agent.respondPermission. */
+  agentId?: string
+  /** Workspace pane, for jump-to-pane. */
+  paneId?: string
+  /** Pane/session label, e.g. "Terminal 2" or "Claude". */
+  title: string
+  /** One-line context (hook message, command result, tool name…). */
+  detail?: string
+  createdAt: number
+  /** Chat permission question extras (Allow/Deny straight from the notch). */
+  requestId?: string
+  toolName?: string
+  inputPreview?: string
+}
+
+/** One running pane, for the notch's click-to-open dashboard. */
+export interface NotchSessionSummary {
+  kind: 'terminal' | 'chat'
+  /** PTY session (terminal kind) — attachable via NotchAttach. */
+  sessionId?: string
+  /** Embedded chat pane (chat kind). */
+  agentId?: string
+  paneId?: string
+  title: string
+  cwd?: string
+  shell?: string
+  /** A foreground command / chat turn is currently running. */
+  working: boolean
+}
+
+/** Full notch state, pushed main → notch renderer on every change. */
+export interface NotchStatePayload {
+  attentions: NotchAttention[]
+  /** Every running pane, for the pill's click-to-open dashboard. */
+  sessions: NotchSessionSummary[]
+  /** Number of agents/commands currently working (pill activity dot). */
+  working: number
+  /** Settings-derived UI config the notch renderer needs (it has no settings store). */
+  ui: { scale: number }
+  /**
+   * Set when the newest attention should auto-expand the pulldown (a permission
+   * question). Carries the attention id; the renderer expands it once per id.
+   */
+  expandHint?: string
+}
+
+/** Jump target for NotchJump: a specific attention, or any running session. */
+export interface NotchJumpTarget {
+  attentionId?: string
+  sessionId?: string
+  agentId?: string
+}
+
+/** NotchAttach response: replay + the PTY's true size (the mini terminal must
+ *  match it exactly — replayed frames were emitted for that width). */
+export interface NotchAttachResult {
+  ok: boolean
+  cols: number
+  rows: number
+  /** Cumulative byte seq after the replay (pass as `since` on re-attach). */
+  headSeq: number
+  /** True when the requested `since` fell out of the ring — reset first. */
+  reset: boolean
+  /** Base64 buffered output to replay before live frames. */
+  replayB64: string
+}
+
+/** One live frame for an attached PTY, main → notch renderer. */
+export type NotchStreamFrame =
+  | { t: 'data'; sessionId: string; seq: number; b64: string }
+  | { t: 'exit'; sessionId: string; code: number }
+  /** The owner pane resized the PTY — resize the mini terminal to match. */
+  | { t: 'resize'; sessionId: string; cols: number; rows: number }
+
+/** Renderer → main per-session agent signals (terminal panes only). */
+export type NotchAgentSignal =
+  /** OSC 133 C/D — a foreground command started/ended (working state + heuristic gate). */
+  | { kind: 'command-state'; running: boolean }
+  /** Screen-content heuristic: the pane looks like it's waiting for input. */
+  | { kind: 'maybe-waiting'; detail?: string }
+  /** Terminal bell while a command runs (Claude Code terminal_bell, etc.). */
+  | { kind: 'bell' }
+  /** OSC 9 toast from the app, with its message text. */
+  | { kind: 'osc9'; message: string }
+
+/** Claude Code hooks integration state (Settings → Notch). */
+export interface NotchHooksStatus {
+  installed: boolean
+  /** Absolute path of the settings file the hooks live in (~/.claude/settings.json). */
+  settingsPath: string
+  /** Present when the last install/uninstall attempt failed. */
+  error?: string
 }

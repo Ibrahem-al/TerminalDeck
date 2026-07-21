@@ -98,11 +98,11 @@ export function AgentChatPane({ cwd, paneId, active = true }: AgentChatPaneProps
       lastErrRef.current = ''
       setPhase('connecting')
       setSlowConnect(false)
-      const info = await window.quarterdeck.agent.create({ permissionMode: mode, cwd })
+      const info = await window.quarterdeck.agent.create({ permissionMode: mode, cwd, paneId })
       agentIdRef.current = info.agentId
       setAgentId(info.agentId)
     },
-    [cwd]
+    [cwd, paneId]
   )
 
   useEffect(() => {

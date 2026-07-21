@@ -23,6 +23,7 @@ import { useUpdater } from './store/updater'
 import { initSessionAutoSave, persistSessionNow, restoreSession } from './session'
 import { CloseConfirm } from './components/common/CloseConfirm'
 import { sendToPane } from './components/terminal/inputBus'
+import { paneIdsIn } from './components/workspace/layout'
 import type { Project } from '@shared/types'
 
 export default function App(): React.JSX.Element {
@@ -104,6 +105,21 @@ export default function App(): React.JSX.Element {
     useUpdater.getState().init()
   }, [])
 
+  // Notch "Open ↗": main focused this window and asks for a specific pane —
+  // restore it if hidden, activate its tab, then focus it.
+  useEffect(() => {
+    return window.quarterdeck.sessions.onFocusPane((paneId) => {
+      const ws = useWorkspace.getState()
+      if (!ws.panes[paneId]) return
+      if (ws.tabs.some((t) => t.hidden?.includes(paneId))) ws.restorePane(paneId)
+      const fresh = useWorkspace.getState()
+      const tab = fresh.tabs.find((t) => paneIdsIn(t.layout).includes(paneId))
+      if (!tab) return
+      fresh.setActiveTab(tab.id)
+      fresh.setActivePane(tab.id, paneId)
+    })
+  }, [])
+
   // each tab behaves like its own project: keep the active project in step with
   // the active tab. Armed only after boot so session restore doesn't clobber the
   // restored sidebar root.
@@ -137,7 +153,8 @@ export default function App(): React.JSX.Element {
             shell: pane.shell ?? 'powershell',
             busy: false,
             alive: true,
-            createdAt: info.createdAt
+            createdAt: info.createdAt,
+            paneId
           }
         ]
       })

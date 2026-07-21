@@ -1,0 +1,369 @@
+/* Notch overlay — everything renders inside a transparent always-on-top
+ * window; the visual states (pill → alert → expanded) are pure CSS. The
+ * window's bounds never change. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.notch-body {
+  background: transparent;
+  overflow: hidden;
+  font-family:
+    'Schibsted Grotesk',
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  color: #e6e9ef;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+/* Hover/interaction halo: bigger than the visible pill so click-through
+ * disarms while the pointer is still approaching (first-click race). */
+.notch-halo {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 0 28px 20px;
+}
+
+/* ── pill (idle: barely-there tab hugging the top edge) ───────────── */
+
+.notch-pill {
+  height: 13px;
+  min-width: 86px;
+  padding: 0 12px;
+  border-radius: 0 0 9px 9px;
+  background: rgba(10, 12, 16, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition:
+    height 160ms ease,
+    background 160ms ease,
+    min-width 160ms ease;
+}
+
+/* Hover comes from the main process's cursor poll (class), with CSS :hover as
+ * a backup where forwarded mousemove happens to work. */
+.notch-pill.hovered,
+.notch-halo:hover .notch-pill {
+  height: 26px;
+  min-width: 150px;
+  background: rgba(14, 17, 23, 0.92);
+  border-color: rgba(255, 255, 255, 0.16);
+  cursor: pointer;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+}
+
+.notch-pill.hovered .notch-pill-count {
+  font-size: 11px;
+  color: #cdd3de;
+}
+
+.notch-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #4c5566;
+  flex: none;
+}
+
+.notch-dot.working {
+  background: #d8a956;
+  animation: notch-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes notch-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.notch-pill-count {
+  font-size: 9px;
+  line-height: 1;
+  color: #8b93a3;
+}
+
+/* ── alert (something wants you) ──────────────────────────────────── */
+
+.notch-alert {
+  max-width: 460px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 0 0 12px 12px;
+  background: rgba(12, 14, 19, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  animation: notch-slide-in 200ms ease;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+.notch-alert:hover {
+  background: rgba(18, 21, 28, 0.97);
+}
+
+.notch-alert.question {
+  border-color: rgba(216, 169, 86, 0.55);
+  box-shadow: 0 6px 26px rgba(216, 169, 86, 0.18);
+}
+
+@keyframes notch-slide-in {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.notch-alert-icon {
+  flex: none;
+  font-size: 12px;
+}
+
+.notch-alert-text {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notch-alert-text b {
+  font-weight: 600;
+  color: #fff;
+}
+
+.notch-badge {
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(216, 169, 86, 0.22);
+  color: #e9c27a;
+  font-size: 10px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── expanded pulldown ────────────────────────────────────────────── */
+
+.notch-panel {
+  width: 720px;
+  max-height: 470px;
+  border-radius: 0 0 14px 14px;
+  background: rgba(11, 13, 17, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-top: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: notch-slide-in 180ms ease;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.55);
+}
+
+.notch-panel-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 6px 14px;
+}
+
+.notch-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notch-panel-sub {
+  font-size: 11px;
+  color: #8b93a3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.notch-btn {
+  flex: none;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #cdd3de;
+  font-size: 11px;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.notch-btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+  color: #fff;
+}
+
+.notch-btn.accent {
+  border-color: rgba(216, 169, 86, 0.5);
+  background: rgba(216, 169, 86, 0.15);
+  color: #e9c27a;
+}
+
+.notch-btn.accent:hover {
+  background: rgba(216, 169, 86, 0.28);
+}
+
+.notch-btn.danger:hover {
+  border-color: rgba(224, 108, 108, 0.5);
+  background: rgba(224, 108, 108, 0.16);
+  color: #eda2a2;
+}
+
+/* attention chips when several panes want you at once */
+.notch-chips {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 0 14px 8px;
+  overflow-x: auto;
+}
+
+.notch-chip {
+  flex: none;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #aab1bf;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.notch-chip.selected {
+  border-color: rgba(216, 169, 86, 0.55);
+  color: #e9c27a;
+  background: rgba(216, 169, 86, 0.12);
+}
+
+.notch-chip.attention {
+  border-color: rgba(216, 169, 86, 0.35);
+}
+
+.notch-chip:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #e6e9ef;
+}
+
+/* mini terminal */
+.notch-term-wrap {
+  flex: 1;
+  min-height: 120px;
+  margin: 0 10px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0a0c10;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 4px 4px 8px;
+}
+
+.notch-term-host {
+  height: 100%;
+}
+
+.notch-term-dead {
+  padding: 18px;
+  font-size: 12px;
+  color: #8b93a3;
+}
+
+/* chat permission card */
+.notch-chat-card {
+  margin: 0 10px 10px;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0a0c10;
+  overflow-y: auto;
+}
+
+.notch-chat-question {
+  font-size: 13px;
+  color: #fff;
+  margin-bottom: 10px;
+}
+
+.notch-chat-input {
+  font-family: 'IBM Plex Mono', Consolas, monospace;
+  font-size: 11px;
+  color: #aab1bf;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 7px;
+  padding: 9px 11px;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.notch-chat-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* macOS: merge with the physical notch — flat black, flush to the top */
+.notch-mac .notch-pill {
+  border-radius: 0 0 10px 10px;
+  background: #000;
+  border-color: #000;
+  min-width: 190px;
+}
+
+.notch-mac .notch-alert,
+.notch-mac .notch-panel {
+  background: rgba(0, 0, 0, 0.96);
+}

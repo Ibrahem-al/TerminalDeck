@@ -10,6 +10,12 @@ import {
   type ImportResult,
   type KanbanCard,
   type ListeningPort,
+  type NotchAgentSignal,
+  type NotchAttachResult,
+  type NotchHooksStatus,
+  type NotchJumpTarget,
+  type NotchStatePayload,
+  type NotchStreamFrame,
   type NotifyConfig,
   type PairedDevice,
   type PairQrPayload,
@@ -27,6 +33,14 @@ import {
 
 const api = {
   platform: process.platform,
+  /**
+   * Windows build number (e.g. 26200), forwarded from main via argv because a
+   * sandboxed preload can't read `os`. Feeds xterm's `windowsPty` reflow
+   * heuristics so ConPTY resizing doesn't garble the buffer; 0 off Windows.
+   */
+  windowsBuild: Number(
+    process.argv.find((a) => a.startsWith('--qd-win-build='))?.split('=')[1] ?? 0
+  ),
 
   files: {
     /** Absolute filesystem path for a dropped File object. */
@@ -54,9 +68,13 @@ const api = {
     close: (): void => ipcRenderer.send(IPC.WindowClose),
     /** Open another independent app window. */
     newWindow: (): void => ipcRenderer.send(IPC.WindowNew),
-    /** True for the launch window — only it restores/persists the saved session. */
+    /** This window's role: 'primary' | 'secondary' | 'notch'. */
+    role: process.argv.find((a) => a.startsWith('--qd-window-role='))?.split('=')[1] ?? 'primary',
+    /** True for the launch window — only it restores/persists the saved session.
+     *  Explicitly NOT the notch overlay (it must never own the session). */
     isPrimary:
-      process.argv.find((a) => a.startsWith('--qd-window-role='))?.split('=')[1] !== 'secondary',
+      (process.argv.find((a) => a.startsWith('--qd-window-role='))?.split('=')[1] ?? 'primary') ===
+      'primary',
     /** Confirm a pending close (after the user OKs the "close?" prompt). */
     confirmClose: (): void => ipcRenderer.send(IPC.WindowConfirmClose),
     /** Main asks the renderer to confirm before the window actually closes. */
@@ -282,7 +300,72 @@ const api = {
       return () => {
         ipcRenderer.removeListener(IPC.RemoteOpenPane, listener)
       }
+    },
+    /** Main asks this window to focus a pane (notch jump-to-pane). */
+    onFocusPane: (callback: (paneId: string) => void): (() => void) => {
+      const listener = (_e: unknown, payload: { paneId: string }): void => callback(payload.paneId)
+      ipcRenderer.on(IPC.PaneFocus, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.PaneFocus, listener)
+      }
     }
+  },
+
+  notch: {
+    /* ── notch window renderer ── */
+    getState: (): Promise<NotchStatePayload> => ipcRenderer.invoke(IPC.NotchGetState),
+    onState: (callback: (state: NotchStatePayload) => void): (() => void) => {
+      const listener = (_e: unknown, state: NotchStatePayload): void => callback(state)
+      ipcRenderer.on(IPC.NotchState, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.NotchState, listener)
+      }
+    },
+    dismiss: (attentionId: string): void => {
+      ipcRenderer.send(IPC.NotchDismiss, attentionId)
+    },
+    /** Focus a pane in its real app window (by attention, session, or agent). */
+    jump: (target: NotchJumpTarget): void => {
+      ipcRenderer.send(IPC.NotchJump, target)
+    },
+    /** Attach a read-write mini-terminal view of a live PTY (replay + stream). */
+    attach: (sessionId: string, since: number): Promise<NotchAttachResult> =>
+      ipcRenderer.invoke(IPC.NotchAttach, sessionId, since),
+    detach: (sessionId: string): void => {
+      ipcRenderer.send(IPC.NotchDetach, sessionId)
+    },
+    onStream: (callback: (frame: NotchStreamFrame) => void): (() => void) => {
+      const listener = (_e: unknown, frame: NotchStreamFrame): void => callback(frame)
+      ipcRenderer.on(IPC.NotchStream, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.NotchStream, listener)
+      }
+    },
+    /** Toggle click-through for the transparent overlay (armed while hovering UI). */
+    setIgnoreMouse: (ignore: boolean): void => {
+      ipcRenderer.send(IPC.NotchSetIgnoreMouse, ignore)
+    },
+    /** Report the visible UI's window-relative rect (drives main's hover poll). */
+    uiRect: (rect: { x: number; y: number; w: number; h: number } | null): void => {
+      ipcRenderer.send(IPC.NotchUiRect, rect)
+    },
+    /** Main-side cursor poll: the pointer entered/left the visible UI. */
+    onHover: (callback: (inside: boolean) => void): (() => void) => {
+      const listener = (_e: unknown, inside: boolean): void => callback(inside)
+      ipcRenderer.on(IPC.NotchHover, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.NotchHover, listener)
+      }
+    },
+
+    /* ── main app windows ── */
+    /** Per-session detection signal (heuristics, bell, OSC 9, command state). */
+    agentSignal: (sessionId: string, signal: NotchAgentSignal): void => {
+      ipcRenderer.send(IPC.NotchAgentSignal, sessionId, signal)
+    },
+    hooksStatus: (): Promise<NotchHooksStatus> => ipcRenderer.invoke(IPC.NotchHooksStatus),
+    hooksInstall: (): Promise<NotchHooksStatus> => ipcRenderer.invoke(IPC.NotchHooksInstall),
+    hooksUninstall: (): Promise<NotchHooksStatus> => ipcRenderer.invoke(IPC.NotchHooksUninstall)
   }
 }
 

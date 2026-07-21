@@ -12,6 +12,7 @@ import {
   saveSettings
 } from '../store/persist'
 import { aiKeepAwake } from '../power/keepAwake'
+import { notch } from '../notch/NotchController'
 
 export function registerProjectsIpc(): void {
   ipcMain.handle(IPC.ProjectsList, (): Project[] => listProjects())
@@ -26,6 +27,8 @@ export function registerProjectsIpc(): void {
     saveSettings(settings)
     // Live-apply the keep-awake preference so toggling it takes effect at once.
     aiKeepAwake.setEnabled(settings.general.keepAwakeWhileBusy)
+    // Same for the notch: creates/destroys the overlay window on toggle.
+    notch.applySettings(settings.notch)
   })
   ipcMain.handle(IPC.AppVersion, (): string => app.getVersion())
 

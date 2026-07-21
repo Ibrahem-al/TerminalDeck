@@ -1,6 +1,6 @@
 import { app, shell, BrowserWindow, ipcMain, nativeImage } from 'electron'
 import { join } from 'path'
-import { hostname } from 'os'
+import { hostname, release } from 'os'
 import { existsSync } from 'fs'
 import { IPC } from '@shared/types'
 import { PtyManager } from './pty/PtyManager'
@@ -18,8 +18,34 @@ import { RemoteServer } from './remote/RemoteServer'
 import { loadRemoteConfig, loadSettings } from './store/persist'
 import { aiKeepAwake } from './power/keepAwake'
 import { registerUpdaterIpc, checkForUpdatesOnLaunch, isQuittingForUpdate } from './updater/updater'
+import { registerNotchIpc } from './notch/ipc'
+import { notch } from './notch/NotchController'
+import { destroyNotchWindow, isNotchWindow, notchGpuGone, setHiddenForFocus } from './notch/NotchWindow'
+import { hookEnv, onHookEvent, startHookServer, stopHookServer } from './notch/hookServer'
 
 const ptys = new PtyManager()
+
+// Dev-only escape hatch: the single-instance lock is keyed on the userData
+// directory, so pointing a dev run at its own dir (QD_USER_DATA) lets it launch
+// BESIDE the installed app instead of quitting on the lock. The persisted store
+// is untouched (electron-store resolved its path at import, and dev already
+// uses a separate `quarterdeck-dev` file); only the lock, cache, and
+// notch-hook scripts move. Never active in packaged builds.
+if (!app.isPackaged && process.env.QD_USER_DATA) {
+  app.setPath('userData', process.env.QD_USER_DATA)
+}
+
+// Real app windows only — the notch overlay must never be picked up by session
+// handoff, second-instance focus, phone open-pane, or quit-on-last-window.
+const appWindows = new Set<BrowserWindow>()
+const firstAppWindow = (): BrowserWindow | null =>
+  [...appWindows].find((w) => !w.isDestroyed()) ?? null
+
+// Windows build number (e.g. 26200), forwarded to the renderer via argv so xterm's
+// ConPTY reflow heuristics (`windowsPty`) are accurate. The sandboxed preload can't
+// read `os`, so we resolve it here. 0 on non-Windows.
+const WIN_BUILD =
+  process.platform === 'win32' ? Number(/^\d+\.\d+\.(\d+)/.exec(release())?.[1] ?? 0) : 0
 
 // A small semi-transparent square used as the cursor image for native file
 // drag-out. Built from a raw bitmap so it's guaranteed non-empty (startDrag
@@ -38,7 +64,7 @@ const DRAG_ICON = (() => {
 
 // RemoteDeck Agent: phone control over Tailscale. Mirrors the desktop's own
 // open terminal panes (DesktopBackend over PtyManager). Defaults off.
-const remoteBackend = new DesktopBackend(ptys)
+const remoteBackend = new DesktopBackend(ptys, firstAppWindow)
 const remoteServer = new RemoteServer(remoteBackend, {
   port: loadRemoteConfig().port,
   serverName: hostname(),
@@ -69,13 +95,17 @@ function createWindow(isPrimary: boolean): void {
       sandbox: true,
       // The renderer reads its role from argv: only the primary window restores
       // and persists the saved session, so extra windows can't clobber it.
-      additionalArguments: [`--qd-window-role=${isPrimary ? 'primary' : 'secondary'}`]
+      additionalArguments: [
+        `--qd-window-role=${isPrimary ? 'primary' : 'secondary'}`,
+        `--qd-win-build=${WIN_BUILD}`
+      ]
     }
   })
   // webContents.id is stable for the window's life; capture it now so the
   // `closed` handler (where webContents may be gone) can still clean up.
   const wcId = win.webContents.id
   if (isPrimary) primaryWcId = wcId
+  appWindows.add(win)
 
   win.on('ready-to-show', () => win.show())
 
@@ -102,11 +132,13 @@ function createWindow(isPrimary: boolean): void {
   })
 
   win.on('closed', () => {
+    appWindows.delete(win)
     removeWindowSessions(wcId)
-    // Hand session ownership to a surviving window so persistence continues
-    // after the primary window is closed.
+    // Hand session ownership to a surviving APP window (never the notch — it
+    // has no session code, so handing it ownership would silently stop
+    // persistence) so autosave continues after the primary window is closed.
     if (wcId === primaryWcId) {
-      const survivor = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+      const survivor = firstAppWindow()
       if (survivor) {
         primaryWcId = survivor.webContents.id
         survivor.webContents.send(IPC.WindowSetPrimary)
@@ -114,6 +146,10 @@ function createWindow(isPrimary: boolean): void {
         primaryWcId = null
       }
     }
+    // Last real window gone: take the notch down with it, so window-all-closed
+    // can fire and the app actually quits (instead of lingering as an invisible
+    // topmost pill process).
+    if (appWindows.size === 0) destroyNotchWindow()
   })
 
   // All external links open in the system browser, never inside the app
@@ -186,7 +222,7 @@ function registerWindowControls(): void {
   })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Single-instance: a second launch (re-running the exe / clicking the shortcut
   // while running) must not start a rival process that fights over the shared
   // session file, the RemoteDeck port, and the updater. Focus the existing
@@ -196,7 +232,7 @@ app.whenReady().then(() => {
     return
   }
   app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    const win = firstAppWindow()
     if (win) {
       if (win.isMinimized()) win.restore()
       win.focus()
@@ -212,6 +248,7 @@ app.whenReady().then(() => {
   registerNotifyIpc()
   registerSessionsIpc()
   registerUpdaterIpc()
+  registerNotchIpc(ptys)
   // Honor the persisted "keep awake while AI is working" preference from launch;
   // SettingsSave re-applies it whenever the toggle changes.
   aiKeepAwake.setEnabled(loadSettings().general.keepAwakeWhileBusy)
@@ -219,6 +256,36 @@ app.whenReady().then(() => {
   onReportedSessionsChange(() => remoteServer.broadcastSessions())
   // Required on Windows for native desktop notifications to display.
   app.setAppUserModelId('app.terminaldeck.desktop')
+
+  // Notch: the hook server must be listening BEFORE the first window exists so
+  // every PTY spawn carries the real port in its env (injection is
+  // unconditional — behavior is gated at the server/controller, so toggling the
+  // notch on later still covers panes spawned now).
+  await startHookServer()
+  ptys.setExtraEnv(hookEnv())
+  onHookEvent((ev) => notch.hookEvent(ev))
+  ptys.setActivityListener((sessionId, event, bytes) => notch.ptyActivity(sessionId, event, bytes))
+  ptys.setWriteListener((sessionId, data) => notch.ptyWrite(sessionId, data))
+  notch.init(loadSettings().notch, WIN_BUILD)
+
+  // showWhenFocused=false: the pill only appears while you're in OTHER apps.
+  app.on('browser-window-focus', (_e, w) => {
+    if (!isNotchWindow(w) && !notch.showWhenFocused) setHiddenForFocus(true)
+  })
+  app.on('browser-window-blur', () => {
+    // Focus may be moving between our windows — only unhide once it has
+    // actually left the app (or landed on the notch itself).
+    setTimeout(() => {
+      const focused = BrowserWindow.getFocusedWindow()
+      if (!focused || isNotchWindow(focused)) setHiddenForFocus(false)
+    }, 80)
+  })
+  // Transparent windows render as an opaque black slab while the GPU process is
+  // down — hide the notch through the crash and come back after respawn.
+  app.on('child-process-gone', (_e, details) => {
+    if (details.type === 'GPU') notchGpuGone()
+  })
+
   createWindow(true)
 
   if (loadRemoteConfig().autoStart) {
@@ -229,7 +296,7 @@ app.whenReady().then(() => {
   checkForUpdatesOnLaunch()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(true)
+    if (appWindows.size === 0) createWindow(true)
   })
 })
 
@@ -239,6 +306,8 @@ app.on('will-quit', () => {
   disposeAllWatchers()
   remoteBackend.disposeAll()
   void remoteServer.stop()
+  stopHookServer()
+  notch.dispose()
 })
 
 app.on('window-all-closed', () => {

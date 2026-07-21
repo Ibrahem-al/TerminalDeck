@@ -23,6 +23,16 @@ export default defineConfig({
   },
   renderer: {
     plugins: [react(), tailwindcss()],
+    build: {
+      rollupOptions: {
+        // Explicit input overrides the default, so the main window's index.html
+        // must be listed alongside the notch overlay's entry.
+        input: {
+          index: resolve('src/renderer/index.html'),
+          notch: resolve('src/renderer/notch.html')
+        }
+      }
+    },
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src'),

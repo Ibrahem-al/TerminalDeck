@@ -147,6 +147,7 @@ export function loadSettings(): AppSettings {
     general: { ...DEFAULT_SETTINGS.general, ...stored.general },
     editor: { ...DEFAULT_SETTINGS.editor, ...stored.editor },
     terminal: { ...DEFAULT_SETTINGS.terminal, ...stored.terminal },
+    notch: { ...DEFAULT_SETTINGS.notch, ...stored.notch },
     keys: { ...DEFAULT_SETTINGS.keys, ...stored.keys }
   }
 }

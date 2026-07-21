@@ -127,6 +127,11 @@ export function applyEvent(items: TranscriptItem[], ev: AgentEvent): TranscriptI
         }
       ]
 
+    // The permission was answered from another surface (the notch) — settle
+    // the pane's card so it can't be clicked again for an already-decided request.
+    case 'permission-resolved':
+      return resolvePermission(items, ev.requestId, ev.allow ? 'allowed' : 'denied')
+
     case 'result': {
       if (!ev.isError) return items
       return [

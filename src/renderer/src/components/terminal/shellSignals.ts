@@ -13,6 +13,13 @@ export interface ShellSignalCallbacks {
    * UI tell the editable prompt apart from the prompt text and scrollback.
    */
   onInputStart?: (pos: { line: number; col: number } | null) => void
+  /** Fires when a foreground command starts (133;C, true) and exits (133;D, false). */
+  onCommandState?: (running: boolean) => void
+  /**
+   * An OSC 9 toast from the running app (iTerm2/ConEmu-style notification with
+   * a message string) — distinct from the 9;9 cwd report and 9;4 progress.
+   */
+  onNotify?: (message: string) => void
 }
 
 /** `file://host/path` → a plain filesystem path (handles the Windows `/C:/…` form). */
@@ -71,11 +78,13 @@ export function attachShellSignals(term: Terminal, cb: ShellSignalCallbacks): ID
           running = true
           commandStart = Date.now()
           cb.onInputStart?.(null)
+          cb.onCommandState?.(true)
           break
         case 'D':
           if (running) {
             running = false
             const code = Number.parseInt(arg ?? '0', 10)
+            cb.onCommandState?.(false)
             cb.onExit?.(Number.isNaN(code) ? 0 : code, commandStart ? Date.now() - commandStart : 0)
           }
           break
@@ -83,14 +92,19 @@ export function attachShellSignals(term: Terminal, cb: ShellSignalCallbacks): ID
       return true // consume — these markers must never print
     }),
 
-    // OSC 9;9 (ConEmu) — current directory as a raw path (what our shells emit)
+    // OSC 9 — ConEmu family: `9;<cwd>` from our integration is a cwd report,
+    // `4;…` is progress (ignored), anything else is an app notification whose
+    // text is a ready-made "needs attention" message (Claude Code & friends).
     term.parser.registerOscHandler(9, (data) => {
       const sep = data.indexOf(';')
       if (sep !== -1 && data.slice(0, sep) === '9') {
         reportCwd(data.slice(sep + 1))
         return true // consume our cwd report
       }
-      return false // leave other OSC 9 uses (notifications, progress) alone
+      if (sep !== -1 && data.slice(0, sep) === '4') return false // progress — not ours
+      const message = data.trim()
+      if (message !== '') cb.onNotify?.(message)
+      return true // consumed either way — xterm has no native rendering for these
     }),
 
     // OSC 7 — current directory as a file:// URL (for user shell configs)

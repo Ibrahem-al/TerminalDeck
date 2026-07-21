@@ -192,6 +192,16 @@ Real pseudo-terminals — not emulated shells.
 - **Agent Chat mode:** a chat-style pane (`AgentChatPane`) that drives Claude Code over its **`stream-json` protocol** (`src/main/agent/AgentSession.ts`) rather than scraping the TUI — surfacing streaming markdown, tool-activity cards, a stop/interrupt button, permission prompts, and per-session cost. Event model (`AgentEvent`): `init`, `text-delta`, `assistant-message` (text/tool_use blocks), `tool-result`, `permission-request`, `result` (cost + duration), `stderr`, `exit`.
 - **Parallel by design:** run many agent/terminal panes across tabs, each in its own directory + project context.
 
+### 4.2b The Notch (agent attention overlay)
+
+A macOS-Dynamic-Island-style always-on-top pill at the top-center of the primary display (`src/main/notch/`, renderer entry `src/renderer/notch.html` → `src/renderer/src/notch/`). Settings → Notch; on by default.
+
+- **States:** a barely-visible pill hugging the top edge (activity dot + working count) → an alert bar when an agent wants you → a pulldown panel with a **live mini terminal** attached to the same PTY (a `PtyManager.subscribe` multicast subscriber, like the RemoteDeck phone — never resizes the shared PTY; renders at the PTY's true cols/rows with a fitted font). Chat-pane questions render an Allow/Deny card instead (answers via the same `AgentRespondPermission` IPC; main echoes a `permission-resolved` event so the pane's card settles too). **Open ↗** focuses the real pane (restores hidden panes, activates its tab) via `IPC.PaneFocus`.
+- **Attention sources:** embedded chat panes (`permission-request`/`result` events — exact); **Claude Code hooks** (SessionStart/Notification/Stop/SessionEnd POSTing to a loopback hook server via an env-gated curl wrapper script in userData; installed into `~/.claude/settings.json` only with in-app consent, read-modify-write + atomic rename, never overwrites an unparseable file); conservative renderer-side **heuristics** for un-hooked CLIs (working→quiet transition + question-shaped bottom rows, alt-screen exempt), terminal **bell** and **OSC 9 toasts**; and long **command completions** (OSC 133 D, with its own duration threshold independent of phone notifications).
+- **Clearing rules:** one attention per session/agent, latest wins; cleared by answering (Enter to the PTY from any surface), output resuming after a grace period, turn results, session exit, or dismiss.
+- **Window rules:** the notch `BrowserWindow` is transparent, frameless, `skipTaskbar`, shown inactive (never steals focus), click-through until the pointer dwells on visible UI (`setIgnoreMouseEvents` + forwarded mousemove), and is **excluded from every app-window enumeration** (session-owner handoff, second-instance focus, phone open-pane, quit-on-last-window — `appWindows` set in `src/main/index.ts`). Auto-expanded questions fold themselves up after 30s untouched; Shift+Esc collapses even while the mini terminal has focus.
+- **Platform:** Windows is the primary target; on macOS the pill styles itself to merge with the physical notch (untested). Exact hook detection covers Windows-native `claude` only (not WSL); `cmd.exe` panes have no OSC 133, so heuristics are inactive there.
+
 ### 4.3 Workspace, tabs & layouts
 
 - **Panes:** 1–16 per workspace tab (`MAX_PANES_PER_TAB = 16`), three kinds: `terminal`, `agent`, `editor`.
