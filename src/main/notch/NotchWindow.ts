@@ -53,6 +53,16 @@ export function isNotchWebContents(wcId: number): boolean {
   return w !== null && w.webContents.id === wcId
 }
 
+/**
+ * True while the user is dealing with the notch — pointer on its visible UI, or
+ * it holds the keyboard (they clicked in and may be typing at the mini terminal).
+ * Timed auto-dismissals check this so an alert is never yanked mid-read.
+ */
+export function isNotchEngaged(): boolean {
+  const w = notchWindow()
+  return w !== null && w.isVisible() && (hoverInside || w.isFocused())
+}
+
 function position(): void {
   const w = notchWindow()
   if (!w) return

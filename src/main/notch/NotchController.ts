@@ -22,6 +22,7 @@ import {
   type AppSettings,
   type NotchAgentSignal,
   type NotchAttention,
+  type NotchAttentionKind,
   type NotchJumpTarget,
   type NotchSessionSummary,
   type NotchStatePayload,
@@ -32,6 +33,7 @@ import {
   createNotchWindow,
   destroyNotchWindow,
   focusNotch,
+  isNotchEngaged,
   isNotchWindow,
   sendToNotch,
   setHiddenForEmpty,
@@ -52,6 +54,23 @@ const OUTPUT_CLEAR_GRACE_MS = 1500
 const OUTPUT_CLEAR_BYTES = 4096
 const OUTPUT_CLEAR_BYTES_HEURISTIC = 1024
 
+/**
+ * Auto-hide visibility only: how long an *announcement* stays up before the notch
+ * retracts by itself. Without this the window slid in when a command finished and
+ * then sat there forever, since nothing else clears a completion — the user had to
+ * click it open and dismiss it by hand, which is the opposite of "hidden until needed".
+ */
+const AUTO_DISMISS_MS = 5000
+/** Re-check cadence while the user is still busy with the notch. */
+const AUTO_DISMISS_RECHECK_MS = 1500
+/**
+ * Kinds that merely announce something that already happened. Requests
+ * (`question`, and the heuristic `maybe-waiting`) are NEVER auto-dismissed: an
+ * agent is blocked until it gets an answer, and surfacing that while you're away
+ * from the desk is the whole point of the notch.
+ */
+const AUTO_DISMISS_KINDS = new Set<NotchAttentionKind>(['turn-done', 'command-done'])
+
 type NotchSettings = AppSettings['notch']
 
 function preview(value: unknown, max = 200): string {
@@ -70,6 +89,7 @@ class NotchController {
   private hookCovered = new Set<string>() // sessionIds that pinged SessionStart
   private raisedAt = new Map<string, number>() // key → ts, for the output-clear grace
   private outputSince = new Map<string, number>() // key → bytes seen after the grace
+  private dismissTimers = new Map<string, ReturnType<typeof setTimeout>>() // key → auto-hide retract
   private agentPanes = new Map<string, { wcId: number; paneId?: string }>()
   private settings: NotchSettings = {
     enabled: false,
@@ -104,6 +124,9 @@ class NotchController {
     // the notch) while an app window is focused would leave it stale.
     const focused = BrowserWindow.getFocusedWindow()
     setHiddenForFocus(!settings.showWhenFocused && focused !== null && !isNotchWindow(focused))
+    // Visibility can flip while attentions are already up — (re)arm or cancel
+    // their retract timers to match the mode that's now in force.
+    for (const key of this.attentions.keys()) this.armAutoDismiss(key)
     this.push()
   }
 
@@ -400,6 +423,8 @@ class NotchController {
   dispose(): void {
     if (this.pushTimer) clearTimeout(this.pushTimer)
     this.pushTimer = null
+    for (const timer of this.dismissTimers.values()) clearTimeout(timer)
+    this.dismissTimers.clear()
   }
 
   /**
@@ -424,14 +449,53 @@ class NotchController {
     this.outputSince.delete(key)
     if (this.attentions.size > MAX_ATTENTIONS) {
       const oldest = [...this.attentions.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0]
-      this.attentions.delete(oldest[0])
+      this.clear(oldest[0]) // clear(), not delete(): the evicted key's timers go too
     }
+    this.armAutoDismiss(key)
   }
 
   private clear(key: string): void {
+    this.cancelAutoDismiss(key)
     this.attentions.delete(key)
     this.raisedAt.delete(key)
     this.outputSince.delete(key)
+  }
+
+  /**
+   * In auto-hide mode, start the countdown that retracts the notch after an
+   * announcement (see AUTO_DISMISS_KINDS). Safe to call for any key at any time:
+   * it cancels a pending timer first and does nothing when the mode or the kind
+   * doesn't qualify.
+   */
+  private armAutoDismiss(key: string): void {
+    this.cancelAutoDismiss(key)
+    if (this.settings.visibility !== 'autohide') return
+    const attention = this.attentions.get(key)
+    if (!attention || !AUTO_DISMISS_KINDS.has(attention.kind)) return
+
+    const id = attention.id
+    const tick = (): void => {
+      this.dismissTimers.delete(key)
+      // A newer attention may have taken this key since we armed (each set()
+      // mints a fresh id) — that one owns its own timer.
+      if (this.attentions.get(key)?.id !== id) return
+      if (this.settings.visibility !== 'autohide') return
+      // Reading it, or typing into its mini terminal? Leave it alone and look again.
+      if (isNotchEngaged()) {
+        this.dismissTimers.set(key, setTimeout(tick, AUTO_DISMISS_RECHECK_MS))
+        return
+      }
+      this.clear(key)
+      this.push() // empties the list → setHiddenForEmpty() slides the window away
+    }
+    this.dismissTimers.set(key, setTimeout(tick, AUTO_DISMISS_MS))
+  }
+
+  private cancelAutoDismiss(key: string): void {
+    const timer = this.dismissTimers.get(key)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.dismissTimers.delete(key)
   }
 
   private push(): void {
