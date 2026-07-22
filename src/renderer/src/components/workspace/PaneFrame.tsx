@@ -10,6 +10,7 @@ import {
   Pencil,
   Pin,
   Plus,
+  RefreshCw,
   SquareSplitHorizontal,
   SquareSplitVertical,
   Tag,
@@ -25,6 +26,7 @@ import { EditorPane } from '../editor/EditorPane'
 import { FloatingMenu } from '../common/FloatingMenu'
 import { ColorWheel } from '../common/ColorWheel'
 import { ContextMenu, type MenuAction } from '../terminal/ContextMenu'
+import { reloadPane } from '../terminal/reloadBus'
 import { PANE_DRAG_TYPE } from './paneDrag'
 import type { Direction } from './layout'
 
@@ -356,6 +358,15 @@ export const PaneFrame = memo(function PaneFrame({
       icon: Pin,
       onClick: () => togglePin(pane.id)
     },
+    ...(pane.kind === 'terminal'
+      ? [
+          {
+            label: 'Reload display',
+            icon: RefreshCw,
+            onClick: () => reloadPane(pane.id)
+          } as MenuAction
+        ]
+      : []),
     {
       label: 'Split right',
       icon: SquareSplitHorizontal,
@@ -510,6 +521,18 @@ export const PaneFrame = memo(function PaneFrame({
         {pane.pinned && <Pin size={10} className="shrink-0 fill-current text-accent" aria-label="pinned" />}
 
         <span className="ml-auto flex shrink-0 items-center opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100">
+          {pane.kind === 'terminal' && (
+            <button
+              aria-label="Reload terminal display"
+              title={
+                'Reload display — re-fit & repaint if text looks garbled or invisible.\nKeeps scrollback and anything you’ve typed but not yet run.'
+              }
+              onClick={() => reloadPane(pane.id)}
+              className="rounded p-1 text-ink-3 transition-colors duration-100 hover:text-ink"
+            >
+              <RefreshCw size={12} />
+            </button>
+          )}
           {!pane.badge && (
             <button
               aria-label="Set pane badge"

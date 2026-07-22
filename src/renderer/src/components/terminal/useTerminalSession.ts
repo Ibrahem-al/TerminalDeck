@@ -29,20 +29,39 @@ function beep(): void {
 }
 
 /**
- * Load xterm's GPU (WebGL) renderer, degrading gracefully. Chromium caps active
- * WebGL contexts (~16 per renderer); with many terminal panes open the browser
- * force-loses the least-recently-used context. When that happens we dispose the
- * addon — xterm falls back to its DOM renderer — and force a repaint on the next
- * frame, so the pane keeps drawing instead of going blank (the "text became
- * invisible" bug). `ref` tracks the live addon (null once lost) so a manual
+ * Chromium caps active WebGL contexts per renderer process (~16) and force-loses
+ * the least-recently-used one to make room for a new one. So a context is never
+ * free: asking for one too many costs some OTHER pane its GPU renderer. We stay a
+ * few under the ceiling and let later panes use xterm's DOM renderer instead —
+ * marginally slower, but it never blanks the pane next door.
+ */
+const WEBGL_BUDGET = 12
+const liveWebgl = new Set<WebglAddon>()
+
+/**
+ * Load xterm's GPU (WebGL) renderer, degrading gracefully. If the browser
+ * force-loses this pane's context anyway, we dispose the addon — xterm falls back
+ * to its DOM renderer — and force a repaint on the next frame, so the pane keeps
+ * drawing instead of going blank (the "text became invisible" bug). `ref` tracks
+ * the live addon (null once lost, or when we never took a context) so a manual
  * reload can re-establish it.
  */
 function loadWebglRenderer(term: Terminal, ref: { current: WebglAddon | null }): void {
+  if (liveWebgl.size >= WEBGL_BUDGET) {
+    ref.current = null // over budget — draw on the CPU rather than evict a neighbour
+    return
+  }
   try {
     const webgl = new WebglAddon()
     webgl.onContextLoss(() => {
+      liveWebgl.delete(webgl)
       webgl.dispose()
-      ref.current = null
+      // Only clear the ref if it still points at THIS addon. The loss event is
+      // delivered asynchronously, so a newer addon may already own the slot —
+      // nulling it would hide a live renderer from reload(), which would then
+      // stack a second WebGL context on the same terminal (and evict yet another
+      // pane's context to get it).
+      if (ref.current === webgl) ref.current = null
       requestAnimationFrame(() => {
         try {
           term.refresh(0, term.rows - 1)
@@ -52,9 +71,23 @@ function loadWebglRenderer(term: Terminal, ref: { current: WebglAddon | null }):
       })
     })
     term.loadAddon(webgl)
+    liveWebgl.add(webgl)
     ref.current = webgl
   } catch {
     ref.current = null // GPU unavailable — xterm uses its DOM renderer
+  }
+}
+
+/** Give this pane's GPU context back to the pool (pane closed or restarted). */
+function releaseWebglRenderer(ref: { current: WebglAddon | null }): void {
+  const webgl = ref.current
+  ref.current = null
+  if (!webgl) return
+  liveWebgl.delete(webgl)
+  try {
+    webgl.dispose()
+  } catch {
+    // already disposed along with the terminal
   }
 }
 
@@ -639,6 +672,9 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
         () => {
           if (sessionIdRef.current) void window.quarterdeck.pty.kill(sessionIdRef.current)
         },
+        // Hand the GPU context back before the terminal goes, so the next pane to
+        // ask for one gets it instead of pushing the renderer over its budget.
+        () => releaseWebglRenderer(webglRef),
         () => term.dispose()
       ]
     },
@@ -698,16 +734,16 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
     // at the wrong width. An explicit resize re-syncs it and makes the app repaint.
     const id = sessionIdRef.current
     if (id) window.quarterdeck.pty.resize(id, term.cols, term.rows)
-    // Reset the GPU renderer: dispose any current addon — even one still sitting out
-    // its ~3s restore window after a context loss, so it looks alive but paints
-    // nothing — and re-acquire a fresh context (or fall back to the DOM renderer if
-    // the GPU is gone). This is what actually un-blanks a pane whose WebGL context was
-    // evicted with too many terminals open. Rebuild the glyph atlas and repaint every
-    // row. Nothing here recreates the Terminal or pty, so scrollback and the shell's
-    // unentered input line are kept.
-    webglRef.current?.dispose()
-    webglRef.current = null
-    loadWebglRenderer(term, webglRef)
+    // Re-acquire the GPU renderer ONLY when this pane has none — its context was
+    // evicted, or it started over budget. Disposing and re-creating a healthy addon
+    // (what this used to do) asks Chromium for an extra context, and it pays for it
+    // by force-losing the least-recently-used one — a NEIGHBOURING pane's. That is
+    // what made reloading one terminal blank the terminal beside it, and cascaded
+    // into reloading every pane in turn. A healthy renderer is repainted below
+    // instead, which fixes garbled output without touching anyone else's context.
+    if (!webglRef.current) loadWebglRenderer(term, webglRef)
+    // Rebuild the glyph atlas and repaint every row. Nothing here recreates the
+    // Terminal or the pty, so scrollback and the shell's unentered input line are kept.
     try {
       term.clearTextureAtlas()
     } catch {
