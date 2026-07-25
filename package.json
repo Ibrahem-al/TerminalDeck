@@ -1,6 +1,6 @@
 {
   "name": "quarterdeck",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Quarterdeck — a chat-style terminal workspace for commanding parallel AI agents",
   "main": "./out/main/index.js",
   "private": true,
