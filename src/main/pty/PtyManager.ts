@@ -57,15 +57,34 @@ function resolveSpawnDir(requested: string | undefined): string {
 
 /** Recent output kept per session so a phone attaching mid-stream gets replay. */
 const RING_CAP = 256 * 1024
+/**
+ * Small consecutive chunks are merged into the newest retained buffer until it
+ * reaches this size. Without it a stream of tiny writes (keystroke echo, cursor
+ * sequences) grows the retained-chunk array towards RING_CAP entries, and V8's
+ * Array#shift stops being O(1) past ~8k elements — measured 106us/chunk at 8-byte
+ * chunks, i.e. the very cliff this ring rewrite exists to remove. Merging keeps
+ * the array around a hundred entries for any input pattern; the copy is bounded
+ * by this constant, never by the ring size.
+ */
+const COALESCE_BYTES = 4096
 
 interface Session {
   pty: IPty
   cwd: string
   shell: ShellKind
   exited: boolean
-  // Scrollback ring + monotonic byte seq, for additional (phone) subscribers.
-  ring: Buffer
-  bufStartSeq: number
+  /**
+   * Scrollback ring for additional (phone / notch mini-terminal) subscribers,
+   * held as the raw chunks rather than one contiguous Buffer. This runs on the
+   * main thread for EVERY byte the shell prints, so it must stay O(chunk):
+   * re-packing a contiguous 256 KiB ring per chunk cost 73-194us and ~512 KiB of
+   * garbage each time (measured), and the resulting GC pauses stall the main
+   * thread — which on Windows is also the thread servicing window messages.
+   * The one Buffer.concat now happens in subscribe(), where it is rare.
+   */
+  chunks: Buffer[]
+  /** Total bytes across `chunks` (<= RING_CAP + one chunk). */
+  ringBytes: number
   headSeq: number
   subs: Map<string, RemoteSubscriber>
 }
@@ -124,8 +143,8 @@ export class PtyManager {
       cwd,
       shell: launch.kind,
       exited: false,
-      ring: Buffer.alloc(0),
-      bufStartSeq: 0,
+      chunks: [],
+      ringBytes: 0,
       headSeq: 0,
       subs: new Map()
     }
@@ -153,13 +172,45 @@ export class PtyManager {
 
   private fanOut(s: Session, data: string): void {
     // Always maintain the ring (capped) so a phone attaching later can replay
-    // recent scrollback, even if nothing is attached right now.
+    // recent scrollback, even if nothing is attached right now. Appending a
+    // chunk and dropping whole chunks off the front is O(chunk), not O(ring).
     const chunk = Buffer.from(data, 'utf8')
     s.headSeq += chunk.length
-    const combined = Buffer.concat([s.ring, chunk])
-    s.ring = combined.length > RING_CAP ? Buffer.from(combined.subarray(combined.length - RING_CAP)) : combined
-    s.bufStartSeq = s.headSeq - s.ring.length
+    const tail = s.chunks[s.chunks.length - 1]
+    if (tail !== undefined && tail.length + chunk.length <= COALESCE_BYTES) {
+      s.chunks[s.chunks.length - 1] = Buffer.concat([tail, chunk], tail.length + chunk.length)
+    } else {
+      s.chunks.push(chunk)
+    }
+    s.ringBytes += chunk.length
+    while (s.ringBytes > RING_CAP) {
+      const head = s.chunks[0]
+      const excess = s.ringBytes - RING_CAP
+      if (head.length <= excess) {
+        s.chunks.shift()
+        s.ringBytes -= head.length
+      } else {
+        // Partial trim of the oldest chunk. subarray is a free view, but a view
+        // pins its whole backing allocation — so when we are discarding more
+        // than we keep (one huge write arriving at once), copy instead. That
+        // caps retained memory at 2x RING_CAP for any input pattern.
+        const kept = head.subarray(excess)
+        s.chunks[0] = excess > kept.length ? Buffer.from(kept) : kept
+        s.ringBytes -= excess
+      }
+    }
     for (const sub of s.subs.values()) sub.onData(s.headSeq, chunk)
+  }
+
+  /** The seq of the first byte still held in the ring. */
+  private bufStartSeq(s: Session): number {
+    return s.headSeq - s.ringBytes
+  }
+
+  /** Flatten the retained chunks, optionally from an offset into the ring. */
+  private ringSnapshot(s: Session, from = 0): Buffer {
+    const all = Buffer.concat(s.chunks, s.ringBytes)
+    return from > 0 ? all.subarray(from) : all
   }
 
   /** Attach an extra (phone) subscriber: replay buffered output after `since`,
@@ -167,21 +218,22 @@ export class PtyManager {
   subscribe(sessionId: string, subscriberId: string, since: number, sub: RemoteSubscriber): SubscribeResult | null {
     const s = this.sessions.get(sessionId)
     if (!s) return null
+    const bufStartSeq = this.bufStartSeq(s)
     let replay: Buffer
     let reset = false
     if (since >= s.headSeq) {
       // Caller is already up to date — nothing buffered to replay.
       replay = Buffer.alloc(0)
-    } else if (since > 0 && since < s.bufStartSeq) {
+    } else if (since > 0 && since < bufStartSeq) {
       // The bytes the caller last saw have scrolled out of the ring (long gap).
       // Replay everything we still hold and signal a reset so the phone clears
       // its terminal first — otherwise the missing region garbles the screen.
-      replay = Buffer.from(s.ring)
+      replay = this.ringSnapshot(s)
       reset = true
     } else {
       // Fresh attach (since 0) or an in-range resume: replay from the requested
       // point (clamped to the start of what we retain).
-      replay = Buffer.from(s.ring.subarray(Math.max(0, since - s.bufStartSeq)))
+      replay = this.ringSnapshot(s, Math.max(0, since - bufStartSeq))
     }
     s.subs.set(subscriberId, sub)
     return {

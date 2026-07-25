@@ -461,15 +461,11 @@ export function useTerminalSession({ shell, cwd, env, paneId, autoRun }: Termina
         }
       })
       const offBuffer = term.buffer.onBufferChange((buf) => setAltScreen(buf.type === 'alternate'))
-      const offData = window.quarterdeck.pty.onData((id, data) => {
-        if (id === session.sessionId) {
-          heurOnOutput(data.length)
-          term.write(data)
-        }
+      const offData = window.quarterdeck.pty.onData(session.sessionId, (data) => {
+        heurOnOutput(data.length)
+        term.write(data)
       })
-      const offExit = window.quarterdeck.pty.onExit((id, code) => {
-        if (id === session.sessionId) setExitCode(code)
-      })
+      const offExit = window.quarterdeck.pty.onExit(session.sessionId, (code) => setExitCode(code))
       const offResize = term.onResize(({ cols, rows }) => {
         window.quarterdeck.pty.resize(session.sessionId, cols, rows)
       })

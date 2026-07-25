@@ -31,6 +31,24 @@ import {
   type UpdateStatusPayload
 } from '@shared/types'
 
+/**
+ * PTY output is routed by session id through ONE ipcRenderer listener each,
+ * rather than a listener per pane. With a listener per pane, every chunk from
+ * every terminal was decoded and dispatched to all N panes so that N-1 of them
+ * could compare an id and drop it — O(panes) work per chunk, plus an
+ * EventEmitter max-listeners warning past ten panes. One pane owns one session,
+ * so a plain Map is the whole routing table.
+ */
+const ptyDataHandlers = new Map<string, (data: string) => void>()
+const ptyExitHandlers = new Map<string, (exitCode: number) => void>()
+
+ipcRenderer.on(IPC.PtyData, (_event, sessionId: string, data: string) => {
+  ptyDataHandlers.get(sessionId)?.(data)
+})
+ipcRenderer.on(IPC.PtyExit, (_event, sessionId: string, exitCode: number) => {
+  ptyExitHandlers.get(sessionId)?.(exitCode)
+})
+
 const api = {
   platform: process.platform,
   /**
@@ -130,18 +148,17 @@ const api = {
       ipcRenderer.send(IPC.PtyResize, sessionId, cols, rows)
     },
     kill: (sessionId: string): Promise<void> => ipcRenderer.invoke(IPC.PtyKill, sessionId),
-    onData: (callback: (sessionId: string, data: string) => void): (() => void) => {
-      const listener = (_event: unknown, sessionId: string, data: string): void => callback(sessionId, data)
-      ipcRenderer.on(IPC.PtyData, listener)
+    /** Subscribe to one session's output. Replaces any prior handler for it. */
+    onData: (sessionId: string, callback: (data: string) => void): (() => void) => {
+      ptyDataHandlers.set(sessionId, callback)
       return () => {
-        ipcRenderer.removeListener(IPC.PtyData, listener)
+        if (ptyDataHandlers.get(sessionId) === callback) ptyDataHandlers.delete(sessionId)
       }
     },
-    onExit: (callback: (sessionId: string, exitCode: number) => void): (() => void) => {
-      const listener = (_event: unknown, sessionId: string, exitCode: number): void => callback(sessionId, exitCode)
-      ipcRenderer.on(IPC.PtyExit, listener)
+    onExit: (sessionId: string, callback: (exitCode: number) => void): (() => void) => {
+      ptyExitHandlers.set(sessionId, callback)
       return () => {
-        ipcRenderer.removeListener(IPC.PtyExit, listener)
+        if (ptyExitHandlers.get(sessionId) === callback) ptyExitHandlers.delete(sessionId)
       }
     }
   },

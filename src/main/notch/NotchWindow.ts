@@ -4,11 +4,20 @@
  * expanded pulldown) are CSS inside the window — the transparent window's
  * bounds are NEVER resized or animated (repaint artifacts on Windows).
  *
- * Click-through: the window starts with setIgnoreMouseEvents(true, {forward})
- * so it's invisible to the mouse; the renderer watches forwarded mousemove and
- * arms interactivity (NotchSetIgnoreMouse) only while the pointer is over
- * visible UI. Shown with showInactive() — it must never steal focus; the first
- * real click gives it focus naturally (and enables blur-to-collapse).
+ * Click-through: the window starts with setIgnoreMouseEvents(true) so it's
+ * invisible to the mouse; the main-side cursor poll below (pollHover) decides
+ * when the pointer is over visible UI and the renderer arms interactivity
+ * (NotchSetIgnoreMouse). Shown with showInactive() — it must never steal focus;
+ * the first real click gives it focus naturally (and enables blur-to-collapse).
+ *
+ * NEVER pass {forward: true} here. On Windows Electron implements forwarded
+ * mouse messages with SetWindowsHookEx(WH_MOUSE_LL, …, NULL, 0) — a SYSTEM-GLOBAL
+ * low-level hook serviced on this process's main thread. Windows then holds every
+ * mouse event on the machine until that thread returns (or LowLevelHooksTimeout,
+ * 300ms, expires), so any main-thread stall here — a node-pty spawn, a GC pause —
+ * becomes desktop-wide input lag in every other application. It also bought us
+ * nothing: the forwarded mousemove never fired reliably on Windows, which is why
+ * hover is polled instead.
  *
  * This window must stay OUT of every app-window enumeration (session-owner
  * handoff, second-instance focus, phone open-pane, quit-on-last-window) —
@@ -91,9 +100,11 @@ function applyVisibility(): void {
 
 /**
  * Hover detection by polling the OS cursor against the renderer-reported UI
- * rect. This deliberately does NOT rely on setIgnoreMouseEvents' forwarded
- * mousemove (flaky on Windows — hover simply never fired in practice); the
- * renderer reacts to NotchHover events to grow the pill and arm real clicks.
+ * rect. This is the ONLY source of hover while the window is click-through —
+ * setIgnoreMouseEvents' forwarded mousemove was flaky on Windows (hover simply
+ * never fired in practice) and is no longer requested at all, because asking for
+ * it costs a system-global mouse hook. The renderer reacts to NotchHover events
+ * to grow the pill and arm real clicks; once armed, ordinary DOM hover works.
  *
  * The same poll drives the taskbar-style reveal: while the window is hidden by
  * visibility='autohide', parking the cursor on the top-center screen edge for
@@ -198,7 +209,7 @@ export function createNotchWindow(winBuild: number): void {
   // the physical notch, above the menu bar); Windows has a single TOPMOST band.
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-  win.setIgnoreMouseEvents(true, { forward: true })
+  win.setIgnoreMouseEvents(true)
   win.setMenuBarVisibility(false)
   position()
 
@@ -247,8 +258,9 @@ export function destroyNotchWindow(): void {
   win = null
 }
 
+/** Arm/disarm click-through. No {forward} — see the header note on WH_MOUSE_LL. */
 export function setNotchIgnoreMouse(ignore: boolean): void {
-  notchWindow()?.setIgnoreMouseEvents(ignore, ignore ? { forward: true } : undefined)
+  notchWindow()?.setIgnoreMouseEvents(ignore)
 }
 
 export function sendToNotch(channel: string, ...args: unknown[]): void {

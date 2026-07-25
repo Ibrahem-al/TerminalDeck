@@ -61,8 +61,9 @@ body,
     min-width 160ms ease;
 }
 
-/* Hover comes from the main process's cursor poll (class), with CSS :hover as
- * a backup where forwarded mousemove happens to work. */
+/* Hover comes from the main process's cursor poll (the .hovered class). CSS
+ * :hover only fires once the window has been armed (click-through off) — the
+ * window never requests forwarded mouse messages, so it cannot fire before that. */
 .notch-pill.hovered,
 .notch-halo:hover .notch-pill {
   height: 26px;

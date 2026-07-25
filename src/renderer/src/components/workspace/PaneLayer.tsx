@@ -275,10 +275,19 @@ export function PaneLayer(): React.JSX.Element {
               left: `${p.rect.x}%`,
               top: `${p.rect.y}%`,
               width: `${p.rect.w}%`,
-              height: `${p.rect.h}%`
+              height: `${p.rect.h}%`,
+              // Park non-visible panes clear of the viewport. `visibility:hidden`
+              // alone stops them being painted but NOT being rendered: xterm
+              // pauses its renderer off its own IntersectionObserver, which is
+              // purely geometric and ignores visibility/opacity — so every pane
+              // on every deck was doing full render passes on every write. A
+              // translate leaves the element's box (and therefore xterm's
+              // measured size) untouched, so nothing needs re-fitting on return;
+              // xterm replays one catch-up refresh when it un-pauses.
+              ...(visible ? null : { transform: 'translateX(-200vw)' })
             }}
             aria-hidden={!visible}
-            className={`absolute p-1 ${visible ? '' : 'invisible opacity-0'} ${p.hidden || !p.isTabActive || p.zoomedAway ? 'pointer-events-none' : ''}`}
+            className={`absolute p-1 ${visible ? '' : 'invisible'} ${p.hidden || !p.isTabActive || p.zoomedAway ? 'pointer-events-none' : ''}`}
           >
             <PaneFrame
               pane={meta}
