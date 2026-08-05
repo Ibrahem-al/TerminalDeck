@@ -210,6 +210,7 @@ A macOS-Dynamic-Island-style always-on-top pill at the top-center of the primary
 - **Dividers:** drag to resize, double-click to reset to 50/50, arrow keys to nudge (with `MIN_RATIO`/`MAX_RATIO` clamps).
 - **Workspace tabs ("decks"):** create (`Ctrl+T` → template picker), close (`Ctrl+W`), switch (`Ctrl+1–9`), reorder by drag, recolor (cycles a palette), rename (double-click). Each tab can carry a `projectId`.
 - **Tab rendering:** all tabs are mounted; inactive ones are `invisible/opacity-0` so sessions stay alive when switching.
+- **Accidental-close guard** (`store/closeGuard.ts` + `components/common/CloseGuardDialog.tsx`): every deck/pane close path — tab ✕, tab context menu, `Ctrl+W`, prefix `&`, pane header ✕, pane menu, the hidden-panes list, prefix `x` — routes through `requestCloseTab`/`requestClosePane` instead of the workspace store, so **Settings → General → Confirm before closing a deck / a pane** (`confirmOnCloseTab`, default on; `confirmOnClosePane`, default off) governs all of them at once. The prompt names what dies (terminals / agents / editors) and offers "don't ask again". Closing a deck's **last** pane is armed by the deck setting too, since the deck goes with it. Pinned panes are left to the workspace store's existing refusal + toast rather than a prompt that leads nowhere.
 
 ### 4.4 Pane management
 
@@ -269,7 +270,7 @@ A project (`Project` type) captures a reusable workspace:
 ### 4.11 Settings
 
 Live-applying panel (`store/settings.ts`, `DEFAULT_SETTINGS`):
-- **General:** default shell, default template, startup (restore/empty), theme, default directory, sidebar side, keep-awake-while-busy, confirm-before-closing.
+- **General:** default shell, default template, startup (restore/empty), theme, default directory, sidebar side, keep-awake-while-busy, and three confirm-before-closing toggles (window / deck / pane — see §4.3).
 - **Editor:** font size, tab size, word wrap, minimap, format-on-save.
 - **Terminal:** font size, scrollback, cursor style/blink, bell, the copy/paste matrix, click-to-cursor mode, replace-selection-on-type.
 - **Themes:** the gallery with hover-to-preview.

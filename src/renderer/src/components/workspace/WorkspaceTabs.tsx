@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { useWorkspace } from '../../store/workspace'
+import { requestCloseTab } from '../../store/closeGuard'
 import { TabContextMenu } from './TabContextMenu'
 
 interface Props {
@@ -12,7 +13,6 @@ export function WorkspaceTabs({ onNewTab }: Props): React.JSX.Element {
   const tabs = useWorkspace((s) => s.tabs)
   const activeTabId = useWorkspace((s) => s.activeTabId)
   const setActiveTab = useWorkspace((s) => s.setActiveTab)
-  const closeTab = useWorkspace((s) => s.closeTab)
   const reorderTabs = useWorkspace((s) => s.reorderTabs)
   const cycleTabColor = useWorkspace((s) => s.cycleTabColor)
   const renameTab = useWorkspace((s) => s.renameTab)
@@ -105,7 +105,7 @@ export function WorkspaceTabs({ onNewTab }: Props): React.JSX.Element {
               aria-label={`Close ${tab.name}`}
               onClick={(e) => {
                 e.stopPropagation()
-                closeTab(tab.id)
+                requestCloseTab(tab.id)
               }}
               className="rounded p-0.5 text-ink-3 opacity-0 transition-opacity duration-100 group-hover:opacity-100 hover:text-danger focus-visible:opacity-100"
             >

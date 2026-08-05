@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { Bot, EyeOff, FileCode2, Minimize2, Terminal, X } from 'lucide-react'
 import { useWorkspace, type PaneMeta } from '../../store/workspace'
+import { requestClosePane } from '../../store/closeGuard'
 import { useKeymapUi } from '../../store/keymap'
 import { FloatingMenu } from '../common/FloatingMenu'
 import { layoutGeometry, MIN_RATIO, MAX_RATIO, type DividerInfo, type Geometry, type Rect } from './layout'
@@ -95,7 +96,6 @@ function Divider({
 /** Floating control (bottom-left) listing the active tab's hidden panes. */
 function HiddenPanesMenu({ hidden, panes }: { hidden: string[]; panes: Record<string, PaneMeta> }): React.JSX.Element {
   const restorePane = useWorkspace((s) => s.restorePane)
-  const closePane = useWorkspace((s) => s.closePane)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   const iconFor = (kind: PaneMeta['kind']): typeof Terminal =>
@@ -143,7 +143,12 @@ function HiddenPanesMenu({ hidden, panes }: { hidden: string[]; panes: Record<st
                   <span className="truncate font-ui text-[12.5px] text-ink-2 group-hover:text-ink">{pane.name}</span>
                 </button>
                 <button
-                  onClick={() => closePane(id)}
+                  onClick={() => {
+                    // Dismiss the popup first — the confirm prompt owns the
+                    // screen from here, and this row may be gone afterwards.
+                    setMenu(null)
+                    requestClosePane(id)
+                  }}
                   aria-label={`Close ${pane.name}`}
                   title="Close this pane"
                   className="shrink-0 rounded p-1 text-ink-3 transition-colors duration-100 hover:text-danger"

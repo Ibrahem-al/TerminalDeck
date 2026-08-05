@@ -614,13 +614,33 @@ export function SettingsPanel({ onEditProject, onNewProject }: Props): React.JSX
                   />
                 </Row>
                 <Row
-                  label="Confirm before closing"
+                  label="Confirm before closing a window"
                   hint="Warn before a window closes while it still has live terminals, agents, or unsaved files. Empty windows always close without a prompt."
                 >
                   <Toggle
                     checked={settings.general.confirmOnClose}
-                    label="Confirm before closing"
+                    label="Confirm before closing a window"
                     onChange={(v) => update('general', { confirmOnClose: v })}
+                  />
+                </Row>
+                <Row
+                  label="Confirm before closing a deck"
+                  hint="Ask first when a workspace tab is closed — from its ✕, the right-click menu, Ctrl+W, or prefix &. Covers closing a deck's last pane too, since that takes the deck with it. Pinned panes still block the close outright."
+                >
+                  <Toggle
+                    checked={settings.general.confirmOnCloseTab}
+                    label="Confirm before closing a deck"
+                    onChange={(v) => update('general', { confirmOnCloseTab: v })}
+                  />
+                </Row>
+                <Row
+                  label="Confirm before closing a pane"
+                  hint="Ask first when a single pane is closed — from its ✕, the pane menu, the hidden-panes list, or prefix x. Off by default; panes come and go often."
+                >
+                  <Toggle
+                    checked={settings.general.confirmOnClosePane}
+                    label="Confirm before closing a pane"
+                    onChange={(v) => update('general', { confirmOnClosePane: v })}
                   />
                 </Row>
               </>

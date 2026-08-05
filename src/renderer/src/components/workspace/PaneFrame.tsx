@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import type { ShellInfo } from '@shared/types'
 import { useWorkspace, type NewPaneSpec, type PaneBadge, type PaneMeta } from '../../store/workspace'
+import { requestClosePane } from '../../store/closeGuard'
 import { usePaneCwd } from '../../store/paneCwd'
 import { TerminalPane } from '../terminal/TerminalPane'
 import { AgentChatPane } from '../agent/AgentChatPane'
@@ -291,7 +292,6 @@ export const PaneFrame = memo(function PaneFrame({
   isOnlyPane
 }: Props): React.JSX.Element {
   const splitPane = useWorkspace((s) => s.splitPane)
-  const closePane = useWorkspace((s) => s.closePane)
   const setActivePane = useWorkspace((s) => s.setActivePane)
   const renamePane = useWorkspace((s) => s.renamePane)
   const setPaneBadge = useWorkspace((s) => s.setPaneBadge)
@@ -404,7 +404,7 @@ export const PaneFrame = memo(function PaneFrame({
       danger: true,
       separator: true,
       disabled: pane.pinned,
-      onClick: () => closePane(pane.id)
+      onClick: () => requestClosePane(pane.id)
     }
   ]
 
@@ -602,7 +602,7 @@ export const PaneFrame = memo(function PaneFrame({
           <button
             aria-label="Close pane"
             title={pane.pinned ? 'Pinned — unpin to close' : isOnlyPane ? 'Closes this workspace tab' : 'Close pane'}
-            onClick={() => closePane(pane.id)}
+            onClick={() => requestClosePane(pane.id)}
             className={`rounded p-1 transition-colors duration-100 ${
               pane.pinned ? 'cursor-not-allowed text-ink-3 opacity-40' : 'text-ink-3 hover:text-danger'
             }`}

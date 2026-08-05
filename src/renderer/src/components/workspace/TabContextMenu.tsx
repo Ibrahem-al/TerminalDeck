@@ -1,5 +1,6 @@
 import { Check, FolderGit2, Pencil, X } from 'lucide-react'
 import { TAB_COLORS, useWorkspace } from '../../store/workspace'
+import { requestCloseTab } from '../../store/closeGuard'
 import { sortedProjects, useProjects } from '../../store/projects'
 import { useSettings } from '../../store/settings'
 import { FloatingMenu } from '../common/FloatingMenu'
@@ -61,7 +62,7 @@ export function TabContextMenu({ tabId, anchor, onClose, onRename }: Props): Rea
       <button
         role="menuitem"
         onClick={() => {
-          useWorkspace.getState().closeTab(tabId)
+          requestCloseTab(tabId)
           onClose()
         }}
         className={`${item} text-danger`}

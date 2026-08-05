@@ -22,6 +22,8 @@ import { useEditorStore } from './store/editor'
 import { useUpdater } from './store/updater'
 import { initSessionAutoSave, persistSessionNow, restoreSession } from './session'
 import { CloseConfirm } from './components/common/CloseConfirm'
+import { CloseGuardDialog } from './components/common/CloseGuardDialog'
+import { requestCloseTab } from './store/closeGuard'
 import { sendToPane } from './components/terminal/inputBus'
 import { paneIdsIn } from './components/workspace/layout'
 import type { Project } from '@shared/types'
@@ -200,7 +202,7 @@ export default function App(): React.JSX.Element {
       else if (key === 'k' && !e.shiftKey) handle(() => setSwitcherOpen(true))
       else if (key === 'n' && e.shiftKey) handle(() => setProjectForm({ project: null }))
       else if (e.key === ',' && !e.shiftKey) handle(() => useSettings.getState().togglePanel())
-      else if (key === 'w' && !e.shiftKey) handle(() => ws.closeTab(ws.activeTabId))
+      else if (key === 'w' && !e.shiftKey) handle(() => requestCloseTab(ws.activeTabId))
       else if (key === 'b' && !e.shiftKey) handle(() => ex.toggleSidebar())
       else if (key === 'd') {
         handle(() => {
@@ -263,6 +265,7 @@ export default function App(): React.JSX.Element {
       </div>
       <Toaster />
       <PaneShortcuts />
+      <CloseGuardDialog />
       {pickerOpen && (
         <TemplatePicker
           onPick={(template, projectId) => {

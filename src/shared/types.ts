@@ -260,6 +260,17 @@ export interface AppSettings {
      * doesn't silently kill running work. Empty windows close without a prompt.
      */
     confirmOnClose: boolean
+    /**
+     * Ask before a workspace tab (deck) closes, so a mis-aimed click on the tab's
+     * ✕ — or a stray Ctrl+W — doesn't take every pane in it with it. Also applies
+     * when closing a deck's last pane would close the deck itself.
+     */
+    confirmOnCloseTab: boolean
+    /**
+     * Ask before an individual pane closes. Off by default — panes come and go
+     * constantly — but available for the same reason as the deck prompt.
+     */
+    confirmOnClosePane: boolean
   }
   editor: {
     fontSize: number
@@ -370,7 +381,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     defaultProjectId: null,
     sidebarSide: 'left',
     keepAwakeWhileBusy: false,
-    confirmOnClose: true
+    confirmOnClose: true,
+    confirmOnCloseTab: true,
+    confirmOnClosePane: false
   },
   editor: { fontSize: 13, tabSize: 2, wordWrap: false, minimap: true, formatOnSave: false },
   terminal: {

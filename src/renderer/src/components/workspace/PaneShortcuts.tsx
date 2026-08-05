@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { TmuxPrefix } from '@shared/types'
 import { useWorkspace } from '../../store/workspace'
+import { requestCloseTab, requestClosePane } from '../../store/closeGuard'
 import { useSettings } from '../../store/settings'
 import { useKanban } from '../../store/kanban'
 import { useKeymapUi } from '../../store/keymap'
@@ -144,7 +145,7 @@ export function PaneShortcuts(): React.JSX.Element {
       } else if (k === '"') {
         if (activePaneId) ws.splitPane(activePaneId, 'column', { kind: 'terminal' })
       } else if (lo === 'x') {
-        if (activePaneId) ws.closePane(activePaneId)
+        if (activePaneId) requestClosePane(activePaneId)
       } else if (lo === 'z') ws.toggleZoomActivePane()
       else if (k === '{') ws.swapAdjacentPane(-1)
       else if (k === '}') ws.swapAdjacentPane(1)
@@ -153,7 +154,7 @@ export function PaneShortcuts(): React.JSX.Element {
       } else if (lo === 'c') ws.addTab(TEMPLATES.find((t) => t.id === 'single') ?? TEMPLATES[0])
       else if (lo === 'n') cycleDeck(1)
       else if (lo === 'p') cycleDeck(-1)
-      else if (k === '&') ws.closeTab(ws.activeTabId)
+      else if (k === '&') requestCloseTab(ws.activeTabId)
       else if (k >= '1' && k <= '9') {
         const i = Number(k) - 1
         if (i < ws.tabs.length) ws.setActiveTab(ws.tabs[i].id)
