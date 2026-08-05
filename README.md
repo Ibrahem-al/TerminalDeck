@@ -2,6 +2,18 @@
 
 A chat-style terminal workspace for commanding parallel AI agents. Fully local, fully private, Windows-first.
 
+> **Heads up: this repo is the Electron source, which is no longer what ships.**
+> From **v0.3.2** the released installer is the Rust/Tauri build, which replaces
+> the Electron app in place; existing installs migrate onto it automatically
+> through the in-app updater. That source lives in **`Ibrahem-al/TerminalDeck-rs`**.
+>
+> Releases are still *published here* — both updaters resolve their download URL
+> from a `v`-prefixed tag in this repo — so a tag from v0.3.2 onward points at
+> this Electron tree while the installer attached to it contains the Rust one.
+>
+> The React renderer under `src/renderer/src/` is kept byte-identical to the Rust
+> build's `src/`. A change to one belongs in both.
+
 > The quarterdeck is the raised deck of a ship from which the captain commands.
 
 ## What it is
